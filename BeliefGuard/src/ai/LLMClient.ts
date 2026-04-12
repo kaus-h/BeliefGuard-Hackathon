@@ -5,7 +5,7 @@ import { getExtractorPrompt } from '../prompts/Extractor';
 import { getPatchGeneratorPrompt } from '../prompts/PatchGenerator';
 
 const OPENROUTER_DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
-const OPENROUTER_REQUEST_TIMEOUT_MS = 60000;
+const OPENROUTER_REQUEST_TIMEOUT_MS = 180000;
 
 type OpenRouterChunkHandler = (chunk: string) => void;
 
@@ -267,7 +267,10 @@ Respond with the JSON object now.`;
 
         try {
             const text = await this.withRetries(
-                () => this.callOpenRouterStreaming(patchPrompt, { jsonMode: true, onChunk: callbacks.onChunk }),
+                // Do NOT pass onChunk here — JSON-mode streaming produces raw JSON
+                // fragments that are unreadable in the UI. The parsed result is
+                // displayed after extraction instead.
+                () => this.callOpenRouterStreaming(patchPrompt, { jsonMode: true }),
                 2
             );
             const result = sanitizePatchGenerationResult(
@@ -492,8 +495,9 @@ Respond with the JSON object now.`;
                     onChunk?.(chunk);
                 }
             } catch {
+                // Failed to parse SSE payload as JSON — accumulate silently.
+                // Do NOT forward raw SSE payloads to onChunk (causes garbled UI output).
                 assembledContent += payload;
-                onChunk?.(payload);
             }
         }
 

@@ -46,6 +46,7 @@ exports.resolveWorkspaceRelativePath = resolveWorkspaceRelativePath;
 exports.getUnifiedDiffChangePath = getUnifiedDiffChangePath;
 exports.summarizeUnifiedDiff = summarizeUnifiedDiff;
 exports.applyUnifiedDiffToWorkspace = applyUnifiedDiffToWorkspace;
+exports.resolveFileUri = resolveFileUri;
 const vscode = __importStar(require("vscode"));
 function normalizeUnifiedDiffText(input) {
     const trimmed = input.trim();
@@ -290,7 +291,7 @@ async function applyStructuredPatchToWorkspace(patchText) {
         if (!targetPath) {
             throw new Error(`BeliefGuard could not resolve a workspace file path for structured patch target: ${block.path}.`);
         }
-        const targetUri = vscode.Uri.joinPath(workspaceFolder.uri, targetPath);
+        const targetUri = await resolveFileUri(workspaceFolder, targetPath);
         if (block.action === 'DELETE_FILE') {
             edit.deleteFile(targetUri, { ignoreIfNotExists: true });
             continue;
@@ -419,7 +420,7 @@ async function applyUnifiedDiffToWorkspace(diffText) {
         if (!targetPath) {
             throw new Error(`BeliefGuard could not resolve a workspace file path for diff target: ${rawTargetPath ?? 'unknown file'}.`);
         }
-        const targetUri = vscode.Uri.joinPath(workspaceFolder.uri, targetPath);
+        const targetUri = await resolveFileUri(workspaceFolder, targetPath);
         if (change.newPath === null) {
             edit.deleteFile(targetUri, { ignoreIfNotExists: true });
             continue;
@@ -475,8 +476,16 @@ function splitPatchBodyLines(content) {
     return content.split(/\r?\n/);
 }
 function findLineIndex(lines, target, startIndex) {
+    const trimmedTarget = target.trim();
+    // Try exact match first
     for (let index = startIndex; index < lines.length; index++) {
         if (lines[index] === target) {
+            return index;
+        }
+    }
+    // Fall back to trimmed match (handles whitespace differences between LLM context and actual file)
+    for (let index = startIndex; index < lines.length; index++) {
+        if (lines[index].trim() === trimmedTarget) {
             return index;
         }
     }
@@ -484,6 +493,37 @@ function findLineIndex(lines, target, startIndex) {
 }
 function escapeRegExp(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+/**
+ * Resolve a patch-relative file path to an actual workspace URI.
+ * Tries direct join first, falls back to workspace.findFiles for
+ * nested project structures (e.g. workspace root contains a subfolder
+ * with the same name that holds the actual source).
+ */
+async function resolveFileUri(workspaceFolder, relativePath) {
+    const directUri = vscode.Uri.joinPath(workspaceFolder.uri, relativePath);
+    try {
+        await vscode.workspace.fs.stat(directUri);
+        return directUri;
+    }
+    catch {
+        // Not found at direct path — search the workspace.
+    }
+    const escapedPath = relativePath
+        .replace(/\\/g, '/')
+        .replace(/[\[\]{}()]/g, (ch) => `[${ch}]`);
+    const matches = await vscode.workspace.findFiles(`**/${escapedPath}`, '**/node_modules/**', 5);
+    if (matches.length > 0) {
+        const suffix = relativePath.replace(/\\/g, '/');
+        for (const m of matches) {
+            const rel = vscode.workspace.asRelativePath(m).replace(/\\/g, '/');
+            if (rel.endsWith(suffix)) {
+                return m;
+            }
+        }
+        return matches[0];
+    }
+    return directUri;
 }
 function splitLinesPreserveTrailingNewline(content) {
     if (!content) {

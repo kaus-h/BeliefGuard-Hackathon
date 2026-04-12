@@ -6,7 +6,7 @@ const zod_1 = require("zod");
 const Extractor_1 = require("../prompts/Extractor");
 const PatchGenerator_1 = require("../prompts/PatchGenerator");
 const OPENROUTER_DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
-const OPENROUTER_REQUEST_TIMEOUT_MS = 60000;
+const OPENROUTER_REQUEST_TIMEOUT_MS = 180000;
 // Reusable Zod schemas for structured outputs
 const BeliefSchema = zod_1.z.object({
     id: zod_1.z.string().optional().describe("A unique UUID v4 identifier"),
@@ -183,7 +183,11 @@ Respond with the JSON object now.`;
         const systemPrompt = (0, PatchGenerator_1.getPatchGeneratorPrompt)(task, validatedBeliefs, plan, repositoryContext);
         const patchPrompt = `${systemPrompt}\n\nAdditional output contract:\n- Include a \"structuredPatch\" field when you can identify per-file edits.\n- Keep \"diffPatch\" as the legacy unified diff fallback so older consumers continue to work.\n- If no actionable patch is available, set diffPatch to an empty string and structuredPatch to an empty array.\n`;
         try {
-            const text = await this.withRetries(() => this.callOpenRouterStreaming(patchPrompt, { jsonMode: true, onChunk: callbacks.onChunk }), 2);
+            const text = await this.withRetries(
+            // Do NOT pass onChunk here — JSON-mode streaming produces raw JSON
+            // fragments that are unreadable in the UI. The parsed result is
+            // displayed after extraction instead.
+            () => this.callOpenRouterStreaming(patchPrompt, { jsonMode: true }), 2);
             const result = sanitizePatchGenerationResult(PatchGenerationResultSchema.parse(extractJsonObject(text)));
             callbacks.onParsed?.(result);
             return result;
@@ -343,8 +347,9 @@ Respond with the JSON object now.`;
                 }
             }
             catch {
+                // Failed to parse SSE payload as JSON — accumulate silently.
+                // Do NOT forward raw SSE payloads to onChunk (causes garbled UI output).
                 assembledContent += payload;
-                onChunk?.(payload);
             }
         }
         return assembledContent;

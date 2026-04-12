@@ -136,7 +136,7 @@ async function showDiff(diffPatch) {
         displayFileName = targetPath?.split(/[\\/]/).pop() || targetPath || 'workspace-change';
         displayFilePath = targetPath || matchingChange.path || displayFileName;
         if (workspaceFolder && targetPath) {
-            originalUri = vscode.Uri.joinPath(workspaceFolder.uri, targetPath);
+            originalUri = await (0, unifiedDiff_1.resolveFileUri)(workspaceFolder, targetPath);
             originalContent = matchingChange.action === 'ADD_FILE' ? '' : await readFileText(originalUri);
             try {
                 proposedContent = (0, unifiedDiff_1.applyStructuredPatchToText)(originalContent, matchingChange);
@@ -166,7 +166,7 @@ async function showDiff(diffPatch) {
             displayFileName = targetPath?.split(/[\\/]/).pop() || targetPath || 'workspace-change';
             displayFilePath = targetPath || rawTargetPath || displayFileName;
             if (workspaceFolder && targetPath) {
-                originalUri = vscode.Uri.joinPath(workspaceFolder.uri, targetPath);
+                originalUri = await (0, unifiedDiff_1.resolveFileUri)(workspaceFolder, targetPath);
                 if (matchingChange.oldPath === null) {
                     originalContent = '';
                     proposedContent = (0, unifiedDiff_1.applyUnifiedDiffToText)('', matchingChange);

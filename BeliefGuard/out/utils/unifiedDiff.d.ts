@@ -25,5 +25,12 @@ export declare function resolveWorkspaceRelativePath(workspaceFolder: vscode.Wor
 export declare function getUnifiedDiffChangePath(change: UnifiedDiffChange, workspaceFolder?: vscode.WorkspaceFolder): string;
 export declare function summarizeUnifiedDiff(diffText: string): PatchSummary;
 export declare function applyUnifiedDiffToWorkspace(diffText: string): Promise<void>;
+/**
+ * Resolve a patch-relative file path to an actual workspace URI.
+ * Tries direct join first, falls back to workspace.findFiles for
+ * nested project structures (e.g. workspace root contains a subfolder
+ * with the same name that holds the actual source).
+ */
+export declare function resolveFileUri(workspaceFolder: vscode.WorkspaceFolder, relativePath: string): Promise<vscode.Uri>;
 export {};
 //# sourceMappingURL=unifiedDiff.d.ts.map

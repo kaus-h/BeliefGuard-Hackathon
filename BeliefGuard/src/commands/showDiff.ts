@@ -14,6 +14,7 @@ import {
     normalizeUnifiedDiffText,
     parseStructuredPatchText,
     parseUnifiedDiff,
+    resolveFileUri,
     resolveWorkspaceRelativePath,
 } from '../utils/unifiedDiff';
 
@@ -120,7 +121,7 @@ export async function showDiff(diffPatch: string): Promise<void> {
         displayFilePath = targetPath || matchingChange.path || displayFileName;
 
         if (workspaceFolder && targetPath) {
-            originalUri = vscode.Uri.joinPath(workspaceFolder.uri, targetPath);
+            originalUri = await resolveFileUri(workspaceFolder, targetPath);
             originalContent = matchingChange.action === 'ADD_FILE' ? '' : await readFileText(originalUri);
             try {
                 proposedContent = applyStructuredPatchToText(
@@ -151,7 +152,7 @@ export async function showDiff(diffPatch: string): Promise<void> {
             displayFilePath = targetPath || rawTargetPath || displayFileName;
 
             if (workspaceFolder && targetPath) {
-                originalUri = vscode.Uri.joinPath(workspaceFolder.uri, targetPath);
+                originalUri = await resolveFileUri(workspaceFolder, targetPath);
 
                 if (matchingChange.oldPath === null) {
                     originalContent = '';
