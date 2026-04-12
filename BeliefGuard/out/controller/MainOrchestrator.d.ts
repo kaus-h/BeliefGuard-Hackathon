@@ -61,6 +61,17 @@ export declare class MainOrchestrator {
      * @returns              Array of user answers keyed by belief ID.
      */
     private awaitUserAnswers;
+    private runPatchGeneration;
+    private expandPatchGenerationContext;
+    private handleStructuredPatchResult;
+    private handleUnifiedDiffPatchResult;
+    private extractStructuredPatchText;
+    private serializeStructuredPatchEntries;
+    private serializeStructuredPatchBlocks;
+    private buildStructuredFileSummary;
+    private looksLikeStructuredPatch;
+    private normalizeRequestedWorkspacePath;
+    private awaitFileReviewDecision;
     private audit;
     private summarizeBeliefs;
     private buildGateDecisionContext;

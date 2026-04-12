@@ -34,8 +34,13 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizeUnifiedDiffText = normalizeUnifiedDiffText;
+exports.normalizeStructuredPatchText = normalizeStructuredPatchText;
 exports.parseUnifiedDiff = parseUnifiedDiff;
 exports.applyUnifiedDiffToText = applyUnifiedDiffToText;
+exports.parseStructuredPatchText = parseStructuredPatchText;
+exports.summarizeStructuredPatch = summarizeStructuredPatch;
+exports.applyStructuredPatchToText = applyStructuredPatchToText;
+exports.applyStructuredPatchToWorkspace = applyStructuredPatchToWorkspace;
 exports.findMatchingDiffChange = findMatchingDiffChange;
 exports.resolveWorkspaceRelativePath = resolveWorkspaceRelativePath;
 exports.getUnifiedDiffChangePath = getUnifiedDiffChangePath;
@@ -50,6 +55,19 @@ function normalizeUnifiedDiffText(input) {
         .trim();
     const diffStart = withoutFence.search(/^(diff --git|---\s+)/m);
     return diffStart >= 0 ? withoutFence.slice(diffStart).trim() : withoutFence;
+}
+function normalizeStructuredPatchText(input) {
+    const trimmed = input.trim();
+    const withoutFence = trimmed
+        .replace(/^```(?:patch|diff)?\s*/i, '')
+        .replace(/```\s*$/i, '')
+        .trim();
+    const patchStart = withoutFence.search(/^\*\*\* Begin Patch/m);
+    if (patchStart >= 0) {
+        return withoutFence.slice(patchStart).trim();
+    }
+    const fileHeaderStart = withoutFence.search(/^\*\*\* (?:Update|Add|Delete) File:\s+/m);
+    return fileHeaderStart >= 0 ? withoutFence.slice(fileHeaderStart).trim() : withoutFence;
 }
 function parseUnifiedDiff(diffText) {
     const lines = normalizeUnifiedDiffText(diffText).split(/\r?\n/);
@@ -132,6 +150,168 @@ function applyUnifiedDiffToText(originalContent, change) {
         lineOffset += replacementLines.length - expectedOldLines.length;
     }
     return resultLines.join('\n');
+}
+function parseStructuredPatchText(patchText) {
+    const lines = normalizeStructuredPatchText(patchText).split(/\r?\n/);
+    const blocks = [];
+    const seenBlocks = new Set();
+    let currentBlock = null;
+    let currentBlockLines = [];
+    let insidePatch = false;
+    const flushCurrentBlock = () => {
+        if (!currentBlock) {
+            return;
+        }
+        currentBlock.content = currentBlockLines.join('\n');
+        const signature = `${currentBlock.action}:${currentBlock.path}`;
+        if (seenBlocks.has(signature)) {
+            throw new Error(`Duplicate structured patch block for ${currentBlock.path}.`);
+        }
+        seenBlocks.add(signature);
+        blocks.push(currentBlock);
+        currentBlock = null;
+    };
+    for (const line of lines) {
+        if (line.startsWith('*** Begin Patch')) {
+            insidePatch = true;
+            continue;
+        }
+        if (line.startsWith('*** End Patch')) {
+            flushCurrentBlock();
+            insidePatch = false;
+            continue;
+        }
+        const header = parseStructuredPatchHeader(line);
+        if (header) {
+            insidePatch = true;
+            flushCurrentBlock();
+            currentBlock = {
+                action: header.action,
+                path: header.path,
+                content: '',
+            };
+            currentBlockLines = [];
+            continue;
+        }
+        if (!insidePatch || !currentBlock) {
+            continue;
+        }
+        currentBlockLines.push(line);
+    }
+    flushCurrentBlock();
+    return { blocks };
+}
+function summarizeStructuredPatch(patchText) {
+    const document = parseStructuredPatchText(patchText);
+    const files = document.blocks.map((block) => {
+        const lines = splitPatchBodyLines(block.content);
+        const additions = block.action === 'DELETE_FILE'
+            ? 0
+            : lines.filter((line) => line.startsWith('+')).length;
+        const deletions = block.action === 'ADD_FILE'
+            ? 0
+            : lines.filter((line) => line.startsWith('-')).length;
+        return {
+            path: block.path,
+            status: block.action === 'ADD_FILE'
+                ? 'ADDED'
+                : block.action === 'DELETE_FILE'
+                    ? 'DELETED'
+                    : 'MODIFIED',
+            additions,
+            deletions,
+        };
+    });
+    return {
+        fileCount: files.length,
+        additions: files.reduce((sum, file) => sum + file.additions, 0),
+        deletions: files.reduce((sum, file) => sum + file.deletions, 0),
+        files,
+    };
+}
+function applyStructuredPatchToText(originalContent, block) {
+    if (block.action === 'DELETE_FILE') {
+        return '';
+    }
+    if (block.action === 'ADD_FILE') {
+        return splitPatchBodyLines(block.content)
+            .filter((line) => !line.startsWith('*** End of File'))
+            .map((line) => (line.startsWith('+') ? line.slice(1) : line))
+            .join('\n');
+    }
+    const originalLines = splitLinesPreserveTrailingNewline(originalContent);
+    const resultLines = [];
+    let cursor = 0;
+    for (const rawLine of splitPatchBodyLines(block.content)) {
+        if (rawLine.startsWith('*** End of File') || rawLine.startsWith('@@')) {
+            continue;
+        }
+        const marker = rawLine.length > 0 && (rawLine[0] === '+' || rawLine[0] === '-' || rawLine[0] === ' ')
+            ? rawLine[0]
+            : ' ';
+        const value = marker === '+' || marker === '-' || marker === ' '
+            ? rawLine.slice(marker === ' ' ? 0 : 1)
+            : rawLine;
+        if (marker === '+') {
+            resultLines.push(value);
+            continue;
+        }
+        const matchIndex = findLineIndex(originalLines, value, cursor);
+        if (matchIndex === -1) {
+            throw new Error(`Structured patch hunk did not match file contents for ${block.path}.`);
+        }
+        while (cursor < matchIndex) {
+            resultLines.push(originalLines[cursor++]);
+        }
+        if (marker === '-') {
+            cursor++;
+        }
+        else {
+            resultLines.push(originalLines[cursor++]);
+        }
+    }
+    while (cursor < originalLines.length) {
+        resultLines.push(originalLines[cursor++]);
+    }
+    return resultLines.join('\n');
+}
+async function applyStructuredPatchToWorkspace(patchText) {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) {
+        throw new Error('No workspace folder is open.');
+    }
+    const document = parseStructuredPatchText(patchText);
+    if (document.blocks.length === 0) {
+        throw new Error('No structured patch blocks were found.');
+    }
+    const edit = new vscode.WorkspaceEdit();
+    for (const block of document.blocks) {
+        const targetPath = resolveWorkspaceRelativePath(workspaceFolder, block.path);
+        if (!targetPath) {
+            throw new Error(`BeliefGuard could not resolve a workspace file path for structured patch target: ${block.path}.`);
+        }
+        const targetUri = vscode.Uri.joinPath(workspaceFolder.uri, targetPath);
+        if (block.action === 'DELETE_FILE') {
+            edit.deleteFile(targetUri, { ignoreIfNotExists: true });
+            continue;
+        }
+        await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(workspaceFolder.uri, getDirectoryPath(targetPath)));
+        if (block.action === 'ADD_FILE') {
+            const content = applyStructuredPatchToText('', block);
+            edit.createFile(targetUri, { overwrite: true, ignoreIfExists: false });
+            edit.insert(targetUri, new vscode.Position(0, 0), content);
+            continue;
+        }
+        const documentText = await vscode.workspace.openTextDocument(targetUri);
+        const newContent = applyStructuredPatchToText(documentText.getText(), block);
+        const fullRange = new vscode.Range(documentText.positionAt(0), documentText.positionAt(documentText.getText().length));
+        edit.replace(targetUri, fullRange, newContent);
+    }
+    const applied = await vscode.workspace.applyEdit(edit);
+    if (!applied) {
+        throw new Error('VS Code rejected the proposed structured patch edits.');
+    }
+    await vscode.workspace.saveAll();
 }
 function findMatchingDiffChange(changes, relativePath, workspaceFolder) {
     const normalized = relativePath.replace(/\\/g, '/');
@@ -272,6 +452,35 @@ function cleanDiffPath(pathText) {
         .replace(/^([ab])\//, '')
         .replace(/\\/g, '/');
     return normalized === '/dev/null' ? null : normalized;
+}
+function parseStructuredPatchHeader(line) {
+    const headerMatch = line.match(/^\*\*\* (Update|Add|Delete) File:\s+(.+)$/);
+    if (!headerMatch) {
+        return null;
+    }
+    const action = headerMatch[1] === 'Add'
+        ? 'ADD_FILE'
+        : headerMatch[1] === 'Delete'
+            ? 'DELETE_FILE'
+            : 'UPDATE_FILE';
+    return {
+        action,
+        path: headerMatch[2].trim(),
+    };
+}
+function splitPatchBodyLines(content) {
+    if (!content) {
+        return [];
+    }
+    return content.split(/\r?\n/);
+}
+function findLineIndex(lines, target, startIndex) {
+    for (let index = startIndex; index < lines.length; index++) {
+        if (lines[index] === target) {
+            return index;
+        }
+    }
+    return -1;
 }
 function escapeRegExp(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

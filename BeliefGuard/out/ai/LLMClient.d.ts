@@ -1,4 +1,28 @@
 import { AgentPlan, Belief, PatchGenerationResult } from '../types';
+type OpenRouterChunkHandler = (chunk: string) => void;
+interface OpenRouterRequestOptions {
+    jsonMode: boolean;
+    onChunk?: OpenRouterChunkHandler;
+}
+interface ContextExpansionResult {
+    assistantMessage: string;
+    requestedFiles: string[];
+    rationale: string;
+}
+interface StructuredPatchEntry {
+    path: string;
+    status: 'ADDED' | 'MODIFIED' | 'DELETED';
+    patch: string;
+    summary?: string;
+    additions?: number;
+    deletions?: number;
+    oldPath?: string;
+    newPath?: string;
+    [key: string]: unknown;
+}
+interface PatchGenerationResultWithStructuredPatch extends PatchGenerationResult {
+    structuredPatch: StructuredPatchEntry[];
+}
 export declare class LLMClient {
     private readonly apiKey;
     private readonly modelName;
@@ -16,7 +40,16 @@ export declare class LLMClient {
     /**
      * Once the Confidence Gate yields PROCEED, this method generates the final patch.
      */
-    generateCodePatch(task: string, plan: AgentPlan, validatedBeliefs: Belief[]): Promise<PatchGenerationResult>;
+    requestContextExpansion(task: string, currentContext: string, validatedBeliefs?: Belief[], plan?: AgentPlan, callbacks?: {
+        onChunk?: OpenRouterChunkHandler;
+    }): Promise<ContextExpansionResult>;
+    generateCodePatch(task: string, plan: AgentPlan, validatedBeliefs: Belief[], repositoryContext?: string, callbacks?: {
+        onChunk?: OpenRouterChunkHandler;
+        onParsed?: (result: PatchGenerationResultWithStructuredPatch) => void;
+    }): Promise<PatchGenerationResultWithStructuredPatch>;
     private callOpenRouter;
+    callOpenRouterStreaming(prompt: string, options: OpenRouterRequestOptions): Promise<string>;
+    private consumeOpenRouterStreamBuffer;
 }
+export {};
 //# sourceMappingURL=LLMClient.d.ts.map

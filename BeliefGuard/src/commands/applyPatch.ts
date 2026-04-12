@@ -1,5 +1,11 @@
 import * as vscode from 'vscode';
-import { applyUnifiedDiffToWorkspace, normalizeUnifiedDiffText } from '../utils/unifiedDiff';
+import {
+    applyStructuredPatchToWorkspace,
+    applyUnifiedDiffToWorkspace,
+    normalizeStructuredPatchText,
+    normalizeUnifiedDiffText,
+    parseStructuredPatchText,
+} from '../utils/unifiedDiff';
 
 export async function applyPatch(diffPatch: string): Promise<void> {
     const answer = await vscode.window.showWarningMessage(
@@ -13,7 +19,15 @@ export async function applyPatch(diffPatch: string): Promise<void> {
     }
 
     try {
-        await applyUnifiedDiffToWorkspace(normalizeUnifiedDiffText(diffPatch));
+        const structuredPatch = parseStructuredPatchText(
+            normalizeStructuredPatchText(diffPatch)
+        );
+
+        if (structuredPatch.blocks.length > 0) {
+            await applyStructuredPatchToWorkspace(diffPatch);
+        } else {
+            await applyUnifiedDiffToWorkspace(normalizeUnifiedDiffText(diffPatch));
+        }
         vscode.window.showInformationMessage(
             'BeliefGuard applied the proposed patch to the workspace.'
         );

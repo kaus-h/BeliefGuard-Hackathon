@@ -10,7 +10,9 @@ import {
     Belief,
     ClarificationQuestion,
     ExtensionToWebviewMessage,
+    FileChangeReadyPayload,
     PatchSummary,
+    StreamingChunkPayload,
     WebviewToExtensionMessage,
 } from '../types';
 
@@ -28,6 +30,12 @@ export class BeliefGuardProvider implements vscode.WebviewViewProvider {
 
     private readonly _onTaskSubmitted = new vscode.EventEmitter<string>();
     public readonly onTaskSubmitted = this._onTaskSubmitted.event;
+
+    private readonly _onFileChangeApproved = new vscode.EventEmitter<FileChangeReadyPayload>();
+    public readonly onFileChangeApproved = this._onFileChangeApproved.event;
+
+    private readonly _onFileChangeRejected = new vscode.EventEmitter<FileChangeReadyPayload>();
+    public readonly onFileChangeRejected = this._onFileChangeRejected.event;
 
     constructor(private readonly _extensionUri: vscode.Uri) { }
 
@@ -66,6 +74,20 @@ export class BeliefGuardProvider implements vscode.WebviewViewProvider {
                         'BeliefGuard discarded the pending workspace patch.'
                     );
                     break;
+                case 'APPROVE_FILE_CHANGE':
+                    this._latestDiffPatch = message.payload.fileChange.diffPatch;
+                    this._onFileChangeApproved.fire(message.payload);
+                    void vscode.window.showInformationMessage(
+                        `BeliefGuard recorded approval for ${message.payload.fileChange.path}.`
+                    );
+                    break;
+                case 'REJECT_FILE_CHANGE':
+                    this._latestDiffPatch = undefined;
+                    this._onFileChangeRejected.fire(message.payload);
+                    void vscode.window.showInformationMessage(
+                        `BeliefGuard rejected ${message.payload.fileChange.path}.`
+                    );
+                    break;
             }
         });
     }
@@ -99,6 +121,30 @@ export class BeliefGuardProvider implements vscode.WebviewViewProvider {
     public postPatchReady(diffPatch: string, summary: PatchSummary): void {
         this._latestDiffPatch = diffPatch;
         this._post({ type: 'PATCH_READY', payload: { diffPatch, summary } });
+    }
+
+    public postFileChangeReady(payload: FileChangeReadyPayload): void {
+        this._latestDiffPatch = payload.fileChange.diffPatch;
+        this._post({
+            type: 'FILE_CHANGE_READY',
+            payload,
+        });
+    }
+
+    public postStreamingChunk(chunk: string): void {
+        this._post({
+            type: 'STREAMING_CHUNK',
+            payload: {
+                chunk,
+            },
+        });
+    }
+
+    public postFileReviewComplete(appliedPaths: string[], rejectedPaths: string[]): void {
+        this._post({
+            type: 'FILE_REVIEW_COMPLETE',
+            payload: { appliedPaths, rejectedPaths },
+        });
     }
 
     public postBlocked(reason: string, violations: Belief[]): void {
@@ -192,6 +238,23 @@ export class BeliefGuardProvider implements vscode.WebviewViewProvider {
         .graph-node { border-left: 3px solid var(--vscode-charts-blue, #3794ff); }
         .graph-badges { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
         .graph-badge { font-size: 10px; padding: 2px 6px; border-radius: 999px; background: var(--vscode-badge-background, rgba(127,127,127,0.16)); }
+        .review-panel, .stream-panel { flex: 0 0 auto; border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, #3c3c3c)); border-radius: 6px; background: var(--vscode-editor-background); overflow: hidden; }
+        .review-panel summary, .stream-panel summary { cursor: pointer; padding: 10px 12px; font-weight: 600; list-style: none; }
+        .review-panel summary::-webkit-details-marker, .stream-panel summary::-webkit-details-marker { display: none; }
+        .review-panel[open] summary, .stream-panel[open] summary { border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-input-border, #3c3c3c)); }
+        .review-panel-body, .stream-panel-body { max-height: 220px; overflow: auto; padding: 10px 12px; }
+        .review-empty, .stream-empty { opacity: 0.7; font-size: 12px; }
+        .file-change-card { border-left: 3px solid var(--vscode-charts-blue, #3794ff); background: var(--vscode-sideBar-background); border-radius: 4px; padding: 8px 10px; }
+        .file-change-card + .file-change-card { margin-top: 6px; }
+        .file-change-card.approved { border-left-color: var(--vscode-charts-green, #89d185); }
+        .file-change-card.rejected { border-left-color: var(--vscode-errorForeground, #f44747); opacity: 0.85; }
+        .file-change-topline { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+        .file-change-path { font-weight: 600; font-size: 12px; word-break: break-word; }
+        .file-change-status { font-size: 11px; opacity: 0.75; white-space: nowrap; }
+        .file-change-meta { margin-top: 4px; font-size: 11px; opacity: 0.7; }
+        .file-change-diff { margin-top: 6px; white-space: pre-wrap; word-break: break-word; font-size: 11px; padding: 8px; border-radius: 4px; background: var(--vscode-textBlockQuote-background, rgba(127,127,127,0.08)); overflow: auto; max-height: 120px; }
+        .file-change-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+        .stream-output { white-space: pre-wrap; word-break: break-word; font-size: 12px; padding: 8px; border-radius: 4px; background: var(--vscode-textBlockQuote-background, rgba(127,127,127,0.08)); min-height: 56px; }
         .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
     </style>
 </head>
@@ -203,6 +266,20 @@ export class BeliefGuardProvider implements vscode.WebviewViewProvider {
         <textarea id="task-input" placeholder="Describe your coding task…&#10;e.g. 'Implement JWT-based auth on the user settings route'"></textarea>
         <button id="btn-submit" class="btn-primary">⚡ Send Guarded Task</button>
     </div>
+    <details id="file-review-panel" class="review-panel">
+        <summary>File Review Queue</summary>
+        <div class="review-panel-body">
+            <div id="file-review-empty" class="review-empty">No file changes are queued yet. Per-file review cards will appear here during patch generation.</div>
+            <div id="file-review-list"></div>
+        </div>
+    </details>
+    <details id="stream-panel" class="stream-panel">
+        <summary>Streaming Output</summary>
+        <div class="stream-panel-body">
+            <div id="stream-empty" class="stream-empty">Streaming chunks will appear here while the agent is generating a response.</div>
+            <div id="stream-output" class="stream-output" aria-live="polite"></div>
+        </div>
+    </details>
     <details id="audit-panel" class="audit-panel">
         <summary>🧪 Run Audit Timeline</summary>
         <div class="audit-panel-body"><div id="audit-empty" class="audit-empty">No audit events yet. Start a task to inspect extraction, grounding, and gate decisions.</div><div id="audit-list"></div></div>
@@ -221,8 +298,21 @@ export class BeliefGuardProvider implements vscode.WebviewViewProvider {
             var auditEmpty = document.getElementById('audit-empty');
             var graphGroups = document.getElementById('graph-groups');
             var graphEmpty = document.getElementById('graph-empty');
+            var fileReviewList = document.getElementById('file-review-list');
+            var fileReviewEmpty = document.getElementById('file-review-empty');
+            var fileReviewPanel = document.getElementById('file-review-panel');
+            var streamOutput = document.getElementById('stream-output');
+            var streamEmpty = document.getElementById('stream-empty');
+            var streamPanel = document.getElementById('stream-panel');
             var currentQuestions = [];
+            var pendingFileChangesById = Object.create(null);
             function escapeHtml(str) { var div = document.createElement('div'); div.appendChild(document.createTextNode(str == null ? '' : String(str))); return div.innerHTML; }
+            function escapeCssSelector(value) {
+                if (window.CSS && typeof window.CSS.escape === 'function') {
+                    return window.CSS.escape(String(value));
+                }
+                return String(value).replace(/["\\\\]/g, '\\\\$&');
+            }
             function appendMessage(kind, title, bodyHtml) {
                 if (!chatThread) return;
                 var card = document.createElement('div');
@@ -238,8 +328,99 @@ export class BeliefGuardProvider implements vscode.WebviewViewProvider {
                 if (auditEmpty) auditEmpty.style.display = '';
                 if (graphGroups) graphGroups.innerHTML = '';
                 if (graphEmpty) graphEmpty.style.display = '';
+                if (fileReviewList) fileReviewList.innerHTML = '';
+                if (fileReviewEmpty) fileReviewEmpty.style.display = '';
+                if (streamOutput) streamOutput.textContent = '';
+                if (streamEmpty) streamEmpty.style.display = '';
+                pendingFileChangesById = Object.create(null);
                 currentQuestions = [];
                 seedWelcomeMessage();
+            }
+            function normalizeFileChange(fileChange, changeId) {
+                var normalized = fileChange || {};
+                var path = normalized.path || 'unknown-file';
+                var diffPatch = normalized.diffPatch || '';
+                var summary = normalized.summary || {};
+                return {
+                    changeId: changeId || normalized.changeId || path,
+                    fileChange: {
+                        path: path,
+                        diffPatch: diffPatch,
+                        summary: {
+                            path: summary.path || path,
+                            status: summary.status || 'UNKNOWN',
+                            additions: Number(summary.additions || 0),
+                            deletions: Number(summary.deletions || 0),
+                        },
+                    },
+                };
+            }
+            function renderFileChangeCard(review) {
+                if (!fileReviewList || !fileReviewEmpty) return;
+                fileReviewEmpty.style.display = 'none';
+                if (fileReviewPanel) fileReviewPanel.open = true;
+
+                var existing = fileReviewList.querySelector('[data-file-change-id="' + escapeCssSelector(review.changeId) + '"]');
+                var status = review.status || 'PENDING';
+                var summary = review.fileChange.summary || {};
+                var diffPreview = review.fileChange.diffPatch || '';
+                var previewLines = diffPreview.split(/\\r?\\n/).slice(0, 24).join('\\n');
+                var cardHtml =
+                    '<div class="file-change-topline">'
+                    + '<div class="file-change-path">' + escapeHtml(review.fileChange.path) + '</div>'
+                    + '<div class="file-change-status">' + escapeHtml(status) + '</div>'
+                    + '</div>'
+                    + '<div class="file-change-meta">'
+                    + 'Status: ' + escapeHtml(summary.status || 'UNKNOWN')
+                    + ' · +' + Number(summary.additions || 0)
+                    + ' / -' + Number(summary.deletions || 0)
+                    + '</div>'
+                    + '<div class="file-change-diff">' + escapeHtml(previewLines || '(empty diff)') + '</div>'
+                    + '<div class="file-change-actions">'
+                    + '<button class="btn-primary" data-action="approve-file-change" data-file-change-id="' + escapeHtml(review.changeId) + '">Approve File</button>'
+                    + '<button class="btn-danger" data-action="reject-file-change" data-file-change-id="' + escapeHtml(review.changeId) + '">Reject File</button>'
+                    + '</div>';
+
+                if (existing) {
+                    existing.className = 'file-change-card';
+                    if (status === 'APPROVED') existing.classList.add('approved');
+                    if (status === 'REJECTED') existing.classList.add('rejected');
+                    existing.innerHTML = cardHtml;
+                    return;
+                }
+
+                var card = document.createElement('div');
+                card.className = 'file-change-card';
+                card.dataset.fileChangeId = review.changeId;
+                if (status === 'APPROVED') card.classList.add('approved');
+                if (status === 'REJECTED') card.classList.add('rejected');
+                card.innerHTML = cardHtml;
+                fileReviewList.appendChild(card);
+            }
+            function renderFileChangeReady(fileChange, changeId) {
+                var review = normalizeFileChange(fileChange, changeId);
+                pendingFileChangesById[review.changeId] = review;
+                renderFileChangeCard(review);
+            }
+            function updateFileChangeDecision(changeId, decision) {
+                var review = pendingFileChangesById[changeId];
+                if (!review || !fileReviewList) return;
+                review.status = decision;
+                var card = fileReviewList.querySelector('[data-file-change-id="' + escapeCssSelector(changeId) + '"]');
+                if (!card) return;
+                card.classList.remove('approved', 'rejected');
+                card.classList.add(decision === 'APPROVED' ? 'approved' : 'rejected');
+                var statusNode = card.querySelector('.file-change-status');
+                if (statusNode) statusNode.textContent = decision;
+                var buttons = card.querySelectorAll('button[data-action="approve-file-change"], button[data-action="reject-file-change"]');
+                buttons.forEach(function (button) { button.disabled = true; });
+            }
+            function appendStreamingChunk(chunk) {
+                if (!streamOutput || !streamEmpty) return;
+                if (streamPanel) streamPanel.open = true;
+                streamEmpty.style.display = 'none';
+                var current = streamOutput.textContent || '';
+                streamOutput.textContent = current + chunk;
             }
             function renderBeliefCards(beliefs) {
                 return (beliefs || []).map(function (belief) {
@@ -418,6 +599,34 @@ export class BeliefGuardProvider implements vscode.WebviewViewProvider {
                     postToExtension({ type: 'REJECT_PATCH' });
                     appendMessage('assistant', 'Changes rejected', 'The pending workspace patch was discarded. You can continue the conversation or start a new guarded run.');
                 }
+                else if (action === 'approve-file-change') {
+                    var approveId = button.getAttribute('data-file-change-id') || '';
+                    var approveReview = pendingFileChangesById[approveId];
+                    if (approveReview && postToExtension({
+                        type: 'APPROVE_FILE_CHANGE',
+                        payload: {
+                            changeId: approveReview.changeId,
+                            fileChange: approveReview.fileChange,
+                        },
+                    })) {
+                        updateFileChangeDecision(approveReview.changeId, 'APPROVED');
+                        appendMessage('assistant', 'File Approved', 'Approved file change for ' + escapeHtml(approveReview.fileChange.path) + '.');
+                    }
+                }
+                else if (action === 'reject-file-change') {
+                    var rejectId = button.getAttribute('data-file-change-id') || '';
+                    var rejectReview = pendingFileChangesById[rejectId];
+                    if (rejectReview && postToExtension({
+                        type: 'REJECT_FILE_CHANGE',
+                        payload: {
+                            changeId: rejectReview.changeId,
+                            fileChange: rejectReview.fileChange,
+                        },
+                    })) {
+                        updateFileChangeDecision(rejectReview.changeId, 'REJECTED');
+                        appendMessage('assistant', 'File Rejected', 'Rejected file change for ' + escapeHtml(rejectReview.fileChange.path) + '.');
+                    }
+                }
                 else if (action === 'expand-graph') {
                     var graphPanel = document.getElementById('graph-panel');
                     if (graphPanel) graphPanel.open = true;
@@ -437,6 +646,7 @@ export class BeliefGuardProvider implements vscode.WebviewViewProvider {
             });
             taskInput.addEventListener('keydown', function (event) { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') btnSubmit.click(); });
             chatThread.addEventListener('click', handleDynamicAction);
+            if (fileReviewList) fileReviewList.addEventListener('click', handleDynamicAction);
             window.addEventListener('message', function (event) {
                 var msg = event.data || {};
                 btnSubmit.disabled = false;
@@ -446,6 +656,14 @@ export class BeliefGuardProvider implements vscode.WebviewViewProvider {
                     case 'AUDIT_EVENT': renderAuditEvent((msg.payload && msg.payload.event) || {}); break;
                     case 'BELIEF_GRAPH_UPDATED': renderBeliefGraph((msg.payload && msg.payload.beliefs) || []); break;
                     case 'BELIEFS_EXTRACTED': renderBeliefReview((msg.payload && msg.payload.beliefs) || [], (msg.payload && msg.payload.questions) || []); renderBeliefGraph((msg.payload && msg.payload.beliefs) || []); break;
+                    case 'FILE_CHANGE_READY': renderFileChangeReady((msg.payload && msg.payload.fileChange) || {}, (msg.payload && msg.payload.changeId) || undefined); break;
+                    case 'FILE_REVIEW_COMPLETE':
+                        renderAssistantMessage(
+                            'File Review Complete',
+                            'Applied ' + (((msg.payload && msg.payload.appliedPaths) || []).length) + ' file(s) and rejected ' + (((msg.payload && msg.payload.rejectedPaths) || []).length) + ' file(s).'
+                        );
+                        break;
+                    case 'STREAMING_CHUNK': appendStreamingChunk((msg.payload && msg.payload.chunk) || ''); break;
                     case 'PATCH_READY': renderPatchReady((msg.payload && msg.payload.summary) || null); break;
                     case 'BLOCKED': renderBlocked((msg.payload && msg.payload.reason) || 'Task blocked.', (msg.payload && msg.payload.violations) || []); break;
                     case 'ERROR': renderError((msg.payload && msg.payload.message) || 'Unknown error.'); break;

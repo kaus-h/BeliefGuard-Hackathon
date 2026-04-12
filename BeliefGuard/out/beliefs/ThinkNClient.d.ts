@@ -10,9 +10,9 @@
  *                  cloud persistence, native contradiction detection,
  *                  clarity scoring, and belief-level audit trails.
  *
- * All thinkN SDK calls are fire-and-forget with try/catch wrappers.
- * If the SDK is unavailable (missing key, network error, rate limit),
- * the system degrades gracefully to local-only operation.
+ * During guarded-task execution, thinkN is treated as a hard dependency.
+ * The local store remains the synchronous source of truth for gate logic,
+ * but thinkN errors are surfaced and propagated instead of being swallowed.
  *
  * Responsibilities
  * ────────────────
@@ -46,10 +46,10 @@ export declare class BeliefStateManager {
     private thinkN;
     private readonly apiKey;
     private readonly agentId;
-    private readonly namespace;
+    private namespace;
     private currentThreadId;
     private diagnosticReporter?;
-    constructor();
+    constructor(workspaceName?: string);
     beginTask(threadId: string): void;
     setDiagnosticReporter(reporter: ((event: ThinkNDiagnosticEvent) => void) | undefined): void;
     ensureReady(): void;
@@ -120,7 +120,7 @@ export declare class BeliefStateManager {
      * Returns a prompt string enriched with thinkN's accumulated belief state.
      *
      * @param input  Optional task description or user message.
-     * @returns      The thinkN-generated context prompt, or empty string on failure.
+     * @returns      The thinkN-generated context prompt.
      * @see https://www.thinkn.ai/dev/sdk/core-api#beliefsbeforeinput
      */
     getBeliefContext(input?: string): Promise<string>;
@@ -138,7 +138,7 @@ export declare class BeliefStateManager {
     }>;
     /**
      * Push a single belief to thinkN via `beliefs.add()`.
-     * Fire-and-forget — errors are logged but do not break the pipeline.
+     * Errors are surfaced so guarded execution can fail fast.
      */
     private syncAddBelief;
     /**
@@ -155,6 +155,7 @@ export declare class BeliefStateManager {
     private createClient;
     private getScopeMetadata;
     private reportDiagnostic;
+    private getThinkNErrorMetadata;
     private wrapThinkNError;
     /**
      * Map BeliefGuard's internal type taxonomy to thinkN's belief types.

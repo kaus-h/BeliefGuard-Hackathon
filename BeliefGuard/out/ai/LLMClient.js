@@ -23,10 +23,26 @@ const AgentPlanSchema = zod_1.z.object({
     targetFiles: zod_1.z.array(zod_1.z.string()).describe("Paths of files to be created or modified"),
     extractedBeliefs: zod_1.z.array(BeliefSchema).describe("All assumptions and beliefs extracted")
 });
+const StructuredPatchEntrySchema = zod_1.z.object({
+    path: zod_1.z.string().optional().default(''),
+    status: zod_1.z.enum(['ADDED', 'MODIFIED', 'DELETED']).optional().default('MODIFIED'),
+    patch: zod_1.z.string().optional().default(''),
+    summary: zod_1.z.string().optional().default(''),
+    additions: zod_1.z.number().int().nonnegative().optional(),
+    deletions: zod_1.z.number().int().nonnegative().optional(),
+    oldPath: zod_1.z.string().optional(),
+    newPath: zod_1.z.string().optional(),
+}).passthrough();
 const PatchGenerationResultSchema = zod_1.z.object({
     assistantMessage: zod_1.z.string().min(1).describe('A concise user-facing explanation for the chat UI'),
-    diffPatch: zod_1.z.string().describe('A raw unified diff containing only repository file edits, or an empty string when no actionable patch should be produced')
-});
+    diffPatch: zod_1.z.string().default('').describe('A raw unified diff containing only repository file edits, or an empty string when no actionable patch should be produced'),
+    structuredPatch: zod_1.z.array(StructuredPatchEntrySchema).default([]).describe('A structured per-file patch description that complements the legacy unified diff')
+}).passthrough();
+const ContextExpansionResultSchema = zod_1.z.object({
+    assistantMessage: zod_1.z.string().min(1).describe('A concise user-facing explanation of what additional context is needed'),
+    requestedFiles: zod_1.z.array(zod_1.z.string()).default([]).describe('Workspace-relative file paths that should be inspected next'),
+    rationale: zod_1.z.string().default('').describe('Why the additional context would help'),
+}).passthrough();
 class LLMClient {
     apiKey;
     modelName;
@@ -117,17 +133,68 @@ class LLMClient {
     /**
      * Once the Confidence Gate yields PROCEED, this method generates the final patch.
      */
-    async generateCodePatch(task, plan, validatedBeliefs) {
-        const systemPrompt = (0, PatchGenerator_1.getPatchGeneratorPrompt)(task, validatedBeliefs, plan);
+    async requestContextExpansion(task, currentContext, validatedBeliefs = [], plan, callbacks = {}) {
+        const beliefsContext = validatedBeliefs.map((belief) => `- [${belief.type}] ${belief.statement} (Validated: ${belief.isValidated}, Risk: ${belief.riskLevel}, Confidence: ${belief.confidenceScore.toFixed(2)})`).join('\n');
+        const prompt = `You are helping BeliefGuard safely expand repository context before code changes are generated.
+
+Return ONLY valid JSON matching this shape:
+{
+  "assistantMessage": "brief explanation of what additional context is needed",
+  "requestedFiles": ["workspace/relative/path.ts"],
+  "rationale": "why these files or areas matter"
+}
+
+Rules:
+- Request only read-only context.
+- Do not propose code changes.
+- Prefer the smallest set of files or folders that would remove uncertainty.
+- If no additional context is needed, return an empty requestedFiles array and explain why.
+
+### CURRENT TASK
+${task}
+
+### CURRENT CONTEXT
+${currentContext}
+
+### VALIDATED BELIEFS
+${beliefsContext || '(none)'}
+
+### CURRENT PLAN
+${plan ? `${plan.intentDescription}\nTarget files: ${plan.targetFiles.join(', ')}` : '(none)'}
+
+Respond with the JSON object now.`;
         try {
-            const text = await this.withRetries(() => this.callOpenRouter(systemPrompt, { jsonMode: true }), 2);
-            return sanitizePatchGenerationResult(PatchGenerationResultSchema.parse(extractJsonObject(text)));
+            const text = await this.withRetries(() => this.callOpenRouterStreaming(prompt, { jsonMode: true, onChunk: callbacks.onChunk }), 2);
+            return sanitizeContextExpansionResult(ContextExpansionResultSchema.parse(extractJsonObject(text)));
         }
         catch (error) {
-            console.warn('[BeliefGuard AI] Structured patch generation failed, trying JSON text fallback:', error);
+            console.warn('[BeliefGuard AI] Streaming context expansion failed, trying non-streaming fallback:', error);
             try {
-                const text = await this.withRetries(() => this.callOpenRouter(systemPrompt, { jsonMode: false }), 2);
-                return sanitizePatchGenerationResult(PatchGenerationResultSchema.parse(extractJsonObject(text)));
+                const text = await this.withRetries(() => this.callOpenRouter(prompt, { jsonMode: true }), 2);
+                return sanitizeContextExpansionResult(ContextExpansionResultSchema.parse(extractJsonObject(text)));
+            }
+            catch (fallbackError) {
+                console.error('[BeliefGuard AI] Failed to request context expansion:', fallbackError);
+                throw new Error(`LLM Context Expansion Error: ${fallbackError?.message || error?.message || 'Unknown error'}`);
+            }
+        }
+    }
+    async generateCodePatch(task, plan, validatedBeliefs, repositoryContext = '', callbacks = {}) {
+        const systemPrompt = (0, PatchGenerator_1.getPatchGeneratorPrompt)(task, validatedBeliefs, plan, repositoryContext);
+        const patchPrompt = `${systemPrompt}\n\nAdditional output contract:\n- Include a \"structuredPatch\" field when you can identify per-file edits.\n- Keep \"diffPatch\" as the legacy unified diff fallback so older consumers continue to work.\n- If no actionable patch is available, set diffPatch to an empty string and structuredPatch to an empty array.\n`;
+        try {
+            const text = await this.withRetries(() => this.callOpenRouterStreaming(patchPrompt, { jsonMode: true, onChunk: callbacks.onChunk }), 2);
+            const result = sanitizePatchGenerationResult(PatchGenerationResultSchema.parse(extractJsonObject(text)));
+            callbacks.onParsed?.(result);
+            return result;
+        }
+        catch (error) {
+            console.warn('[BeliefGuard AI] Streaming structured patch generation failed, trying fallback:', error);
+            try {
+                const text = await this.withRetries(() => this.callOpenRouter(patchPrompt, { jsonMode: false }), 2);
+                const result = sanitizePatchGenerationResult(PatchGenerationResultSchema.parse(extractJsonObject(text)));
+                callbacks.onParsed?.(result);
+                return result;
             }
             catch (fallbackError) {
                 console.error('[BeliefGuard AI] Failed to generate code patch:', fallbackError);
@@ -180,6 +247,108 @@ class LLMClient {
             clearTimeout(timeout);
         }
     }
+    async callOpenRouterStreaming(prompt, options) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), OPENROUTER_REQUEST_TIMEOUT_MS);
+        const body = {
+            model: this.modelName,
+            messages: [{ role: 'user', content: prompt }],
+            temperature: options.jsonMode ? 0 : 0.2,
+            stream: true,
+        };
+        if (options.jsonMode) {
+            body.response_format = { type: 'json_object' };
+        }
+        try {
+            const response = await fetch(`${this.baseURL}/chat/completions`, {
+                method: 'POST',
+                headers: this.headers,
+                body: JSON.stringify(body),
+                signal: controller.signal,
+            });
+            if (!response.ok) {
+                const rawText = await response.text();
+                throw createRequestError(`OpenRouter request failed with status ${response.status}: ${rawText || response.statusText}`, response.status);
+            }
+            if (!response.body) {
+                const rawText = await response.text();
+                return extractContentFromRawResponse(rawText);
+            }
+            const contentType = response.headers.get('content-type') || '';
+            if (!contentType.includes('text/event-stream')) {
+                const rawText = await response.text();
+                return extractContentFromRawResponse(rawText);
+            }
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let assembledContent = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                    break;
+                }
+                buffer += decoder.decode(value, { stream: true });
+                assembledContent += this.consumeOpenRouterStreamBuffer(buffer, options.onChunk, (remaining) => {
+                    buffer = remaining;
+                });
+            }
+            const tail = decoder.decode();
+            if (tail) {
+                buffer += tail;
+                assembledContent += this.consumeOpenRouterStreamBuffer(buffer, options.onChunk, (remaining) => {
+                    buffer = remaining;
+                });
+            }
+            if (buffer.trim()) {
+                assembledContent += this.consumeOpenRouterStreamBuffer(`${buffer}\n`, options.onChunk, (remaining) => {
+                    buffer = remaining;
+                });
+            }
+            if (!assembledContent.trim()) {
+                return extractContentFromRawResponse(buffer);
+            }
+            return assembledContent;
+        }
+        catch (error) {
+            if (error?.name === 'AbortError') {
+                throw createRequestError(`OpenRouter request timed out after ${OPENROUTER_REQUEST_TIMEOUT_MS}ms`, 408);
+            }
+            throw error;
+        }
+        finally {
+            clearTimeout(timeout);
+        }
+    }
+    consumeOpenRouterStreamBuffer(buffer, onChunk, updateRemaining) {
+        const lines = buffer.split(/\r?\n/);
+        const remaining = lines.pop() ?? '';
+        updateRemaining(remaining);
+        let assembledContent = '';
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.startsWith('data:')) {
+                continue;
+            }
+            const payload = trimmed.slice('data:'.length).trim();
+            if (!payload || payload === '[DONE]') {
+                continue;
+            }
+            try {
+                const parsed = JSON.parse(payload);
+                const chunk = extractMessageContent(parsed, true);
+                if (chunk) {
+                    assembledContent += chunk;
+                    onChunk?.(chunk);
+                }
+            }
+            catch {
+                assembledContent += payload;
+                onChunk?.(payload);
+            }
+        }
+        return assembledContent;
+    }
 }
 exports.LLMClient = LLMClient;
 function extractJsonObject(text) {
@@ -195,13 +364,14 @@ function extractJsonObject(text) {
         return JSON.parse(match[0]);
     }
 }
-function extractMessageContent(responseBody) {
-    const content = responseBody?.choices?.[0]?.message?.content;
+function extractMessageContent(responseBody, preserveWhitespace = false) {
+    const choice = responseBody?.choices?.[0];
+    const content = choice?.message?.content ?? choice?.delta?.content;
     if (typeof content === 'string') {
-        return content.trim();
+        return preserveWhitespace ? content : content.trim();
     }
     if (Array.isArray(content)) {
-        return content
+        const joined = content
             .map((part) => {
             if (typeof part === 'string') {
                 return part;
@@ -211,8 +381,8 @@ function extractMessageContent(responseBody) {
             }
             return '';
         })
-            .join('')
-            .trim();
+            .join('');
+        return preserveWhitespace ? joined : joined.trim();
     }
     return '';
 }
@@ -246,7 +416,53 @@ function sanitizePatchGenerationResult(result) {
     return {
         assistantMessage: result.assistantMessage.trim(),
         diffPatch: result.diffPatch.trim(),
+        structuredPatch: result.structuredPatch.map((entry) => sanitizeStructuredPatchEntry(entry)),
     };
+}
+function sanitizeStructuredPatchEntry(entry) {
+    const path = firstNonEmptyString([entry.path, entry.newPath, entry.oldPath]);
+    return {
+        ...entry,
+        path,
+        status: entry.status,
+        patch: entry.patch.trim(),
+        summary: entry.summary.trim(),
+        additions: typeof entry.additions === 'number' ? entry.additions : undefined,
+        deletions: typeof entry.deletions === 'number' ? entry.deletions : undefined,
+    };
+}
+function sanitizeContextExpansionResult(result) {
+    return {
+        assistantMessage: result.assistantMessage.trim(),
+        requestedFiles: result.requestedFiles.map((file) => file.trim()).filter(Boolean),
+        rationale: result.rationale.trim(),
+    };
+}
+function firstNonEmptyString(values) {
+    for (const value of values) {
+        const trimmed = value?.trim();
+        if (trimmed) {
+            return trimmed;
+        }
+    }
+    return '';
+}
+function extractContentFromRawResponse(rawText) {
+    const trimmed = rawText.trim();
+    if (!trimmed) {
+        return '';
+    }
+    try {
+        const parsed = JSON.parse(trimmed);
+        const content = extractMessageContent(parsed);
+        if (content) {
+            return content;
+        }
+    }
+    catch {
+        // Fall through to returning the raw text below.
+    }
+    return trimmed;
 }
 function tunePlanForGate(plan, task) {
     const tunedBeliefs = plan.extractedBeliefs.map((belief) => tuneBeliefForGate(belief));

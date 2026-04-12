@@ -45,13 +45,18 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts"
+    "lint": "eslint src --ext ts",
+    "test": "node ./node_modules/vitest/vitest.mjs run --config ./vitest.config.mjs",
+    "test:watch": "node ./node_modules/vitest/vitest.mjs --config ./vitest.config.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/uuid": "^10.0.0",
     "@types/vscode": "^1.85.0",
-    "typescript": "^5.3.0"
+    "@vitest/runner": "^4.1.4",
+    "fast-check": "^4.6.0",
+    "typescript": "^5.3.0",
+    "vitest": "^4.1.4"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.52",
