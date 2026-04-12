@@ -49,8 +49,8 @@ describe('Bug Condition: Agent Workflow Defects (1.7-1.10)', () => {
         expect(providerSource).toContain('FILE_CHANGE_READY');
         expect(providerSource).toContain('APPROVE_FILE_CHANGE');
         expect(providerSource).toContain('REJECT_FILE_CHANGE');
-        expect(providerSource).toContain('Approve File');
-        expect(providerSource).toContain('Reject File');
+        expect(providerSource).toContain('Approve file');
+        expect(providerSource).toContain('Reject file');
     });
 
     it('1j: The agent window should surface streaming chunks during generation', () => {
