@@ -1,0 +1,296 @@
+﻿Architectural Blueprint and Implementation Specification: BeliefGuard VS Code Extension
+The paradigm of autonomous artificial intelligence in software engineering is undergoing a critical transition. While contemporary coding agents possess vast capabilities for generating syntactically correct logic, their operational deployment is frequently undermined by a phenomenon known as agent drift. Drift occurs when an autonomous system prematurely collapses probabilistic uncertainty into deterministic action, executing codebase edits based on unverified, implicit assumptions regarding architecture, user intent, or environmental constraints.1 To mitigate this systemic failure mode, the following comprehensive analysis outlines the conceptual architecture, operational requirements, and end-to-end implementation strategy for a Visual Studio Code (VS Code) extension—provisionally titled "BeliefGuard." Designed specifically for the VillageHacks 2026 hackathon under the "thinkN" track at Arizona State University, this system introduces a strict belief-aware control layer that sits directly between the human developer and the autonomous coding workflow.1
+The fundamental thesis of the BeliefGuard architecture is that artificial intelligence agents do not fail merely due to a lack of context; rather, they fail because they lack structured, explicit beliefs. The system operationalizes this philosophy by merging two core mechanisms: a Repo Belief Graph and a Confidence-to-Action Gate.1 The Repo Belief Graph maps extracted agent assumptions against observable repository evidence, while the Confidence-to-Action Gate acts as a definitive decision matrix that blocks code edits until high-risk beliefs are explicitly validated either by the user or by concrete codebase artifacts.1 By deeply integrating the thinkN Beliefs SDK, the extension ensures that agents maintain longitudinal coherence, actively track logical contradictions over time, and formulate explicit confidence thresholds before ever modifying a file.1
+The Etiology of Agent Drift and the Necessity of Belief Governance
+In the current landscape of AI-assisted development, agents are typically orchestrated through a sequence of prompts that ingest workspace context and output code modifications.5 However, this traditional pipeline lacks an intermediate governance layer capable of reasoning about the validity of the agent's internal inferences. When a user requests a complex modification, such as adding role-based access control to a dashboard, the agent must make dozens of micro-decisions. It must infer whether the existing authentication flow is stateful or stateless, whether roles should be represented as enumerations or database entities, and whether the modification necessitates backward compatibility.1 Without an explicit intervention mechanism, the agent implicitly decides these factors, generates a comprehensive patch, and applies it to the codebase. If any of these implicit assumptions contradict the true architectural constraints of the repository, the resulting code introduces severe technical debt, architectural violations, or immediate runtime failures.1
+The BeliefGuard system reconceptualizes this workflow by enforcing a rigid separation between planning and execution.1 Before any code is generated, the agent is restricted to producing a human-readable execution plan. This plan is subjected to a rigorous extraction pipeline that isolates every latent assumption and elevates it to a first-class programmatic entity known as a Belief.1 This transformation from implicit thought to explicit, version-controlled state is the cornerstone of the architecture. By forcing the agent's uncertainty to remain explicit, the system shifts the interaction paradigm from reactive code review to proactive intent validation.1 The extension strictly monitors observable artifacts—such as user prompts, configuration manifests, routing logic, and test outputs—explicitly avoiding any reliance on hidden chain-of-thought processes or proprietary internal reasoning streams that may be inaccessible in third-party agents.1
+The VillageHacks Operational Context and Strategic Alignment
+The VillageHacks 2026 event, hosted by the Startup Village community at Arizona State University, presents a unique environment for deploying this architectural blueprint.3 The event heavily emphasizes connecting builders with startup-driven problem statements, prioritizing functional end-to-end execution and deep technical integration over superficial aesthetic polish.1 Specifically, the track sponsored by thinkN calls for infrastructure that addresses the reality that agents possess memory but lack true beliefs, leading to contradiction and drift.4 The judging criteria for this track inherently favor systems that can dynamically track what an agent knows, what information is missing, and when it possesses sufficient confidence to act.1
+BeliefGuard aligns perfectly with this mandate by utilizing the thinkN SDK (npm i beliefs) not merely as a peripheral feature, but as the central nervous system of the extension.1 The system abandons the generic "AI assumption checker" trope in favor of establishing a robust, stateful belief infrastructure for coding environments. Rather than presenting users with an endless array of trivial chatbot prompts, the architecture focuses on surfacing only the highest-risk contradictions, thereby optimizing the developer's attention and proving the viability of belief-dependent decision gating.1
+Architectural Paradigm: The Repo Belief Graph
+The Repo Belief Graph is a lightweight, strictly acyclic data structure designed to represent the system's holistic understanding of the codebase, the user's intent, and the agent's proposed trajectory.1 Unlike generalized semantic knowledge graphs that attempt to model the entirety of an application's logic, this graph is narrowly scoped to track actionable constraints relevant only to the immediate task.1 This targeted approach ensures that the system remains performant and viable for local execution within the constrained environment of a hackathon demo.
+The graph is constructed dynamically during the task lifecycle. When the agent generates an execution plan, the Belief Extractor module parses the text and generates discrete nodes representing individual inferences. Concurrently, the Context Collector module scans the local file system to generate nodes representing deterministic repository facts. The system then attempts to draw edges between these nodes, establishing a web of supporting evidence or identifying direct logical contradictions.1
+Node and Edge Taxonomy
+To ensure programmatic consistency and type safety across the extension, the Repo Belief Graph relies on a strictly defined taxonomy of nodes and edges. The following table delineates the categories of information processed by the graph manager.
+Graph Element Category
+	Technical Definition
+	Operational Example
+	Repo Fact Node
+	Deterministic, immutable truths extracted directly from configuration files, package manifests, or Abstract Syntax Trees (AST).
+	"Framework is Next.js App Router"; "Package manager is strictly pnpm"; "TypeScript strict mode is enabled".
+	Task Belief Node
+	Operational constraints derived directly from the user's explicit prompt or historical interaction context.
+	"Implement feature using a minimal patch"; "Do not alter the existing database schema".
+	Agent Assumption Node
+	Inferred operational logic generated by the agent's plan that lacks immediate verification.
+	"Roles exist as a binary Enum of Admin and User"; "Authentication flow is stateless and token-based".
+	User Constraint Node
+	High-confidence facts explicitly confirmed by the user during the clarification loop, overriding all other conflicting inferences.
+	"Maintain backwards compatibility with the v1 public API".
+	Evidence Node
+	Direct pointers to specific artifacts within the VS Code workspace, including file URIs, line numbers, or terminal outputs.
+	package.json line 14; src/middleware/auth.ts export declaration.
+	SUPPORTED_BY Edge
+	A directed link indicating that a repository fact or evidence node mathematically increases the confidence score of an assumption.
+	Agent Assumption (Next.js)    SUPPORTED_BY    Evidence Node (next.config.js presence).
+	CONTRADICTED_BY Edge
+	A directed link indicating a direct logical conflict between two nodes, instantly dropping the confidence score of the dependent assumption to zero.
+	Task Belief (No new dependencies)    CONTRADICTED_BY    Agent Plan (npm install lodash).
+	This structured representation is crucial for the operation of the system. An agent assumption cannot transition to a verified state unless it possesses at least one SUPPORTED_BY edge originating from a high-weight repository fact or a user constraint.1
+The Confidence-to-Action Gate Policy Engine
+While the Repo Belief Graph establishes what the system believes to be true, the Confidence-to-Action Gate dictates how the system responds to that state. The gate operates as a deterministic policy engine that prevents code execution until the aggregate risk of the belief state is sufficiently mitigated.1 This ensures that stochastic outputs from the underlying Language Models are strictly bounded by programmable, predictable thresholds.
+The gate evaluates the graph by assessing the Risk Level (categorized as Low, Medium, or High) and the Confidence Score (a floating-point value between 0.0 and 1.0) of every pending belief required for the proposed action.1 High-risk beliefs are typically those that threaten the architectural integrity of the repository, such as modifications to authentication middleware, alterations to public-facing API contracts, the introduction of novel third-party dependencies, or sweeping changes to database schemas.1 Low-risk beliefs involve localized logic changes, cosmetic UI updates, or internal utility functions.
+The routing logic of the Confidence-to-Action Gate is strictly defined by the following decision matrix:
+Gate Decision
+	Trigger Condition
+	System Action
+	PROCEED
+	All beliefs necessary for the action possess a Confidence Score greater than 0.85, and absolutely no High-Risk beliefs remain in an unverified state.
+	The gate opens. The validated context is appended to the prompt, and the agent is authorized to generate the final code patch.
+	INSPECT_MORE
+	A Medium or High-Risk belief possesses a Confidence Score between 0.40 and 0.85, indicating partial uncertainty, and the repository evidence space has not yet been fully exhausted.
+	The gate pauses execution. The system autonomously initiates secondary file reads or AST parsing to locate specific symbols related to the uncertainty.
+	ASK_USER
+	A High-Risk belief cannot be resolved autonomously via repository evidence, or its Confidence Score falls below 0.40.
+	Execution is strictly halted. The extension surfaces a highly targeted, localized clarification question to the developer via the VS Code Webview.
+	BLOCK
+	The agent's proposed action generates a direct CONTRADICTED_BY edge against a previously validated User Constraint or an immutable Repo Fact.
+	Execution is permanently halted for the current action path. The user is notified of the specific architectural violation preventing the edit.
+	By adhering to this matrix, the system fundamentally shifts the interaction paradigm. It prevents the common pitfall of bombarding the user with endless, low-value clarification questions. Instead, it autonomously grounds low- and medium-risk assumptions against the repository files, escalating only the critical, high-blast-radius uncertainties to the human developer.1
+Integration Paradigm for the thinkN SDK
+The integration of the thinkN SDK (npm i beliefs) elevates the architecture from a simple prompt-wrapper to a robust, persistent state machine. The thinkN package serves as the canonical infrastructure for representing, storing, updating, and reasoning over the agent's belief state.1
+In the optimal integration architecture, the SDK manages the complete lifecycle of all extracted assumptions.1 Every parsed inference is instantiated within the thinkN ecosystem as a discrete belief object. This object encapsulates the core statement, the origin source, cryptographic or programmatic links to evidence, the floating-point confidence score, and the boolean validation status.1 When the agent subsequently proposes an action or formulates a new plan, the thinkN engine evaluates the incoming proposition against the entirety of the previously stored, validated belief state. This native contradiction tracking ensures that the agent cannot silently backtrack on user-confirmed constraints established in earlier interaction turns.1
+Furthermore, the SDK enables belief persistence across the entire VS Code session. Traditional coding agents suffer from context window amnesia; as the dialogue progresses, early constraints are pushed out of context, leading to late-stage drift. By leveraging thinkN, the BeliefGuard extension maintains a resilient memory of user intent and repository rules, allowing the agent to operate cohesively over multiple, iterative prompting cycles.1
+Given the time constraints inherent in a 24-hour hackathon, the system defines a Minimal Viable Product (MVP) integration path. If deep contradiction reasoning via the SDK proves technically prohibitive, the extension will utilize thinkN strictly for state management of the immediate task's explicit assumptions.1 The extension will push extracted beliefs into the SDK, update their confidence scores based on localized user feedback through the Webview, and query the SDK to determine if any beliefs remain in an "unverified" state before invoking the Confidence-to-Action Gate.1 Custom implementation will be strictly reserved for VS Code specific interactions, such as Webview UX rendering, file system inspection, and localized patch validation against repository constraints.1
+Implementation Architecture and Runtime Pipeline
+The internal architecture of the BeliefGuard extension is highly modular, partitioned into strictly isolated components. This modularity is not merely a best practice; it is a fundamental requirement to enable concurrent development by multiple AI agents within the Antigravity IDE without generating race conditions or merge conflicts.1
+The runtime pipeline governs the lifecycle of a developer task from its inception to the final application of a code patch.1 The sequence of operations is meticulously orchestrated to ensure that uncertainty is continually forced to the surface before code execution occurs.
+1. Task Submission: The developer initiates the workflow by inputting a natural language task description (e.g., "Implement JWT-based authentication on the user settings route") via the extension's sidebar Webview.
+2. Context Collection: The RepoContextCollector module interfaces with the VS Code File System API. It gathers the active file URI, the broader workspace directory structure, and foundational configuration manifests such as package.json or tsconfig.json.
+3. Plan Request Generation: The LLMOrchestrationEngine constructs a highly specific prompt containing the user task and the collected context. Crucially, the system instructions strictly prohibit the generation of executable code, demanding instead a structured JSON output detailing the intended execution plan and any latent assumptions required to proceed.1
+4. Belief Extraction and Graph Ingestion: The LLM's JSON response is parsed by the BeliefExtractor. The latent assumptions are transformed into structured Belief objects and loaded directly into the thinkN Graph Manager to establish the initial state.1
+5. Evidence Grounding: The system invokes the EvidenceLocator to scan the collected workspace context. It utilizes targeted regex heuristics and Abstract Syntax Tree (AST) traversal to find textual evidence that supports or contradicts the newly ingested beliefs, updating their confidence scores accordingly.1
+6. Gate Evaluation: The ConfidenceGateEvaluator processes the updated graph state against the decision matrix policy.
+7. Clarification Loop Iteration: If the gate yields an ASK_USER decision, the pipeline pauses. The Webview is updated to present the high-risk, unresolved beliefs as clear, human-readable questions.1 The user's responses generate immutable USER_CONSTRAINT beliefs, which are fed back into the thinkN state, and the gate is re-evaluated.
+8. Agent Resumption and Patch Generation: Once the gate yields a PROCEED decision, the LLMOrchestrationEngine is invoked a second time. The synthesized prompt now contains the original request, the validated execution plan, and the fully resolved belief state. The LLM generates the required code modifications.
+9. Post-Patch Validation: Before the user sees the code, the PostPatchValidator module performs a secondary heuristic check. It analyzes the generated unified diff string against the belief graph. If the diff touches files or alters logic explicitly protected by a USER_CONSTRAINT (e.g., modifying a database schema when instructed to preserve it), the validation fails, and the drift is flagged.1
+10. Final Review and Application: The validated patch is surfaced to the developer utilizing the native VS Code Diff API, allowing for a standard review and merge process.1
+Core Data Models and State Schemas
+The integrity of the orchestration pipeline relies entirely on strict, TypeScript-enforced data models. Loose typing or reliance on unstructured string parsing invariably leads to brittle agent integrations and pipeline failures. The following data dictionaries define the explicit interfaces utilized across the extension's modules.1
+Primary Enumerations and Types
+Type Signature
+	Permitted Values
+	Implementation Purpose
+	RiskLevel
+	'LOW', 'MEDIUM', 'HIGH'
+	Defines the potential blast radius of an assumption, dictating the threshold required for the Confidence Gate to open.
+	GateDecision
+	'PROCEED', 'INSPECT_MORE', 'ASK_USER', 'BLOCK'
+	The definitive output of the policy engine, controlling the execution flow of the pipeline.
+	SourceType
+	'FILE', 'CONFIG', 'USER_PROMPT', 'USER_ANSWER'
+	Categorizes the origin of evidence, influencing the weight applied to confidence score adjustments.
+	BeliefType
+	'REPO_FACT', 'TASK_BELIEF', 'AGENT_ASSUMPTION', 'USER_CONSTRAINT'
+	Categorizes the node within the Repo Belief Graph, determining its immutability.
+	Core Object Interfaces
+The Belief and Evidence interfaces form the foundational nodes of the graph state managed by the thinkN SDK.
+
+
+TypeScript
+
+
+
+
+export interface Evidence {
+   id: string;
+   sourceType: SourceType;
+   uri: string; // The specific file path or context identifier
+   snippet: string; // The exact string matching the heuristic
+   weight: number; // The algorithmic weight applied to the belief evaluation
+}
+
+export interface Belief {
+   id: string;
+   statement: string;
+   type: BeliefType;
+   confidenceScore: number; // Float bounded between 0.0 and 1.0
+   riskLevel: RiskLevel;
+   evidenceIds: string; // Directed edges to supporting Evidence nodes
+   isValidated: boolean; // Boolean flag denoting clearance by the Gate
+   contradictions: string; // Directed edges to conflicting Belief IDs
+}
+
+export interface AgentPlan {
+   intentDescription: string;
+   targetFiles: string;
+   extractedBeliefs: Belief; // The raw assumptions prior to grounding
+}
+
+export interface ClarificationQuestion {
+   beliefId: string;
+   questionText: string;
+   options?: string; // Optional structured responses for rapid UI selection
+}
+
+export interface ValidationResult {
+   isValid: boolean;
+   violations: Belief; // The specific constraints violated by the generated patch
+   diffPatch: string; // The raw unified diff proposed for application
+}
+
+By enforcing these strict schemas, the communication between the LLM Orchestration Engine, the VS Code Webview, and the thinkN state manager remains entirely predictable, eliminating the parsing errors that frequently plague generative AI integrations.
+Engineering Execution Strategy: Agent Master Prompts
+The implementation of the BeliefGuard extension will be executed rapidly utilizing a multi-agent framework within the Antigravity IDE (or an equivalent multi-threaded coding agent workspace). To achieve an end-to-end build within the 24-hour hackathon timeframe, the engineering strategy relies on strict domain partitioning. If multiple agents attempt to modify the same controller files or rewrite the same interfaces, race conditions and terminal merge conflicts will occur.1
+To prevent this, the architecture is divided into five strictly isolated domains. The following sections contain the exhaustive Master Prompts. These documents are designed to be ingested directly by the Agent Manager, providing each autonomous worker with absolute clarity regarding its responsibilities, its file system boundaries, and its technical requirements.
+Agent 1 Master Prompt: VS Code Shell, UI, and Presentation Layer
+Agent 1: Extension Shell, Webview UI, and Command Registration Master Specification
+Role Designator: Frontend & VS Code API Specialist
+Primary Objective: Scaffold the foundational VS Code extension architecture, establish the main entrypoint, construct the Webview presentation layer using HTML/CSS/JS (or lightweight React), and wire the command palette triggers.
+Strict Operational Boundaries (Anti-Overlap Protocol)
+* DO NOT implement any LLM API calls, prompt strings, or JSON parsing logic.
+* DO NOT implement file system traversal, AST reading, or regex scanning.
+* DO NOT implement the Confidence Gate logic, decision matrices, or thinkN SDK integration.
+* You have exclusive write access ONLY to the src/extension.ts, src/webview/*, and src/commands/* directories.
+Exhaustive Technical Requirements
+1. Extension Entrypoint Initialization (src/extension.ts)
+* Scaffold a standard, robust VS Code extension lifecycle utilizing the activate and deactivate lifecycle methods.
+* Register the primary command: vscode.commands.registerCommand('beliefguard.startGuardedTask',...).
+* Initialize a WebviewViewProvider to render the user interface persistently within the VS Code sidebar. Ensure the provider is properly registered in the package.json contributes section.
+2. Webview Provider Implementation (src/webview/BeliefGuardProvider.ts)
+* Construct a class implementing the vscode.WebviewViewProvider interface.
+* Establish a resilient, two-way asynchronous message passing system utilizing webview.webview.onDidReceiveMessage to listen for UI events, and webview.webview.postMessage to push state updates from the extension host.
+* Define strict message payload interfaces for the following event types: TASK_SUBMITTED, BELIEFS_EXTRACTED, USER_ANSWERED, and PATCH_READY.
+3. User Interface Construction (src/webview/ui/)
+* Build a lightweight, highly responsive user interface that matches the native VS Code aesthetic (utilizing standard VS Code CSS variables for colors and fonts).
+* Implement a state-driven rendering logic capable of transitioning smoothly between four distinct views:
+   * State 1: Task Initiation: A primary text area allowing the user to submit their natural language coding task, accompanied by a submission button.
+   * State 2: Processing: A loading state displaying the text "Extracting Agent Plan and Formulating Beliefs..." to indicate background LLM activity.
+   * State 3: Gate Intervention (Blocked): A view triggered when the Confidence Gate yields ASK_USER. It must display a list of extracted beliefs, visually highlighting High-Risk unverified assumptions in a warning color. It must dynamically render input fields or radio buttons corresponding to the ClarificationQuestion payload.
+   * State 4: Diff Resolution: A final state confirming the patch generation, providing a button to trigger the VS Code diff view for user review.
+4. Diff Command Integration (src/commands/showDiff.ts)
+* Implement an asynchronous function utilizing vscode.commands.executeCommand('vscode.diff',...) to instantiate a side-by-side comparison. It must take the proposed patch string, apply it to a temporary virtual document, and compare it against the active text editor's current state.
+Expected Deliverable
+A fully compiling VS Code extension shell that successfully registers a sidebar view, seamlessly transitions between the four defined UI states, and successfully passes mock typed messages back and forth to the extension host without error.
+Agent 2 Master Prompt: Context Collector and Evidence Grounding Engine
+Agent 2: Repo Context Collector & Evidence Grounding Engine Master Specification
+Role Designator: File System & Workspace Analysis Expert
+Primary Objective: Construct the modules responsible for aggregating repository context, parsing configuration manifests, and locating local textual evidence to autonomously support or contradict extracted beliefs.
+Strict Operational Boundaries (Anti-Overlap Protocol)
+* DO NOT interact with the VS Code Webview UI or modify the extension command registration.
+* DO NOT instantiate network calls to external LLMs or construct prompt templates.
+* DO NOT implement the thinkN state graph or manage belief persistence.
+* You have exclusive write access ONLY to the src/context/* and src/utils/fs.ts directories.
+Exhaustive Technical Requirements
+1. Workspace Traversal & Context Aggregation (src/context/WorkspaceScanner.ts)
+* Implement an asynchronous function gatherInitialContext(): Promise<string> that compiles the state of the workspace into an optimized string for LLM ingestion.
+* The function must retrieve the raw text content of standard package manifests (e.g., package.json, pom.xml, requirements.txt) utilizing vscode.workspace.findFiles.
+* The function must generate a flat, text-based representation of the directory structure up to 3 levels deep, strictly ignoring high-noise directories such as node_modules, .git, and dist.
+* The function must extract the full text content of all currently visible or active text editors utilizing the vscode.window.visibleTextEditors API.
+2. Evidence Locator Heuristics (src/context/EvidenceLocator.ts)
+* Implement the core grounding function: findEvidenceForBelief(beliefStatement: string, keywords: string): Promise<Evidence>.
+* Design a series of lightweight, deterministic search heuristics. For example:
+   * If the keyword array contains specific framework identifiers (e.g., "React", "Next.js", "Express"), the function must parse the package.json dependencies block to confirm their presence and version.
+   * If the keywords relate to a specific filename identified in the context (e.g., auth.ts or database.sql), the function must retrieve and scan that file's content up to a maximum threshold of 1000 lines to prevent memory overflow.
+* The function must return an array of Evidence objects that strictly adhere to the defined interface, containing the sourceType (e.g., 'CONFIG' or 'FILE'), the exact file uri, and the specific snippet of text that triggered the heuristic match.
+3. Data Model Adherence and Error Handling
+* Ensure that the generated Evidence objects strictly match the global interface: { id: string; sourceType: SourceType; uri: string; snippet: string; weight: number; }.
+* Implement robust try/catch blocks around all file system reads. If a file is locked or unreadable, the locator must gracefully skip the file rather than crashing the extension process, returning an empty evidence array for that specific search path.
+Expected Deliverable
+A standalone, highly performant set of file system utilities that can be invoked by the main orchestrator to instantly package the state of the VS Code workspace into a context block, alongside a heuristic locator that consistently returns accurate evidence snippets based on keyword searches.
+Agent 3 Master Prompt: thinkN Integration and Graph State Manager
+Agent 3: Belief Graph Manager & thinkN Integration Layer Master Specification
+Role Designator: State Management & SDK Specialist
+Primary Objective: Implement the resilient belief tracking infrastructure utilizing the thinkN SDK. This module is responsible for managing the state, computing validity, and enforcing contradiction checks across all agent assumptions throughout the session lifecycle.
+Strict Operational Boundaries (Anti-Overlap Protocol)
+* DO NOT interact with the VS Code API (no file system reads, no webview rendering).
+* DO NOT construct LLM prompts, format JSON, or execute model API requests.
+* DO NOT implement the Confidence Gate routing logic.
+* You have exclusive write access ONLY to the src/beliefs/* and src/state/* directories.
+Exhaustive Technical Requirements
+1. thinkN SDK Wrapper Implementation (src/beliefs/ThinkNClient.ts)
+* Initialize the beliefs npm package ecosystem.
+* Construct a robust wrapper class named BeliefStateManager that abstracts the direct SDK calls.
+* Implement the method addBelief(belief: Belief): void to register a newly extracted assumption into the thinkN state memory. Ensure the belief ID is cryptographically unique (e.g., UUID v4).
+* Implement the method updateBeliefConfidence(id: string, newConfidence: number, newEvidence: Evidence): void. This method must locate the existing belief in the SDK, append the new evidence edges, recalculate the internal confidence score, and toggle the isValidated boolean flag if the score surpasses the 0.85 threshold.
+2. Graph Querying and Contradiction Detection (src/beliefs/BeliefGraph.ts)
+* Develop the logic to manage the relational mapping between the overarching AgentPlan and the individual Belief objects stored in the SDK.
+* Implement the query method getUnverifiedHighRiskBeliefs(): Belief. This function must filter the current state space and return an array of beliefs where riskLevel === 'HIGH' and isValidated === false.
+* Implement the critical method detectContradictions(proposedActionContext: string): Belief. This method must utilize the thinkN SDK's native contradiction and coherence checking tools to evaluate the proposed context against the stored state. If the SDK requires localized support for the hackathon, implement a fallback deterministic boolean check that flags conflicts between CONTRADICTED_BY edges and USER_CONSTRAINT nodes.
+3. Session Persistence Engine (src/state/SessionStore.ts)
+* Architect a singleton or heavily scoped data store that keeps the validated thinkN beliefs alive across multiple iterative prompt cycles.
+* This persistence guarantees that the agent retains memory of user constraints established during the initial task input when generating subsequent patches, effectively preventing late-stage agent drift.
+Expected Deliverable
+A rock-solid state management module that accepts raw, parsed belief data, seamlessly integrates it into the thinkN infrastructure, tracks contradictions autonomously, and exposes a clean API of getter/setter methods for the Confidence Gate to query the real-time health and risk profile of the belief state.
+Agent 4 Master Prompt: LLM Orchestration and Belief Extraction Pipeline
+Agent 4: AI/LLM Orchestration & Belief Extraction Pipeline Master Specification
+Role Designator: LLM Integration & Prompt Engineering Expert
+Primary Objective: Construct the secure network layer responsible for communicating with the Language Model. Design and implement the structured JSON prompts required to extract execution plans, isolate beliefs, and generate the final, constraint-adherent code patches.
+Strict Operational Boundaries (Anti-Overlap Protocol)
+* DO NOT interact with the VS Code Webview, commands, or file system APIs.
+* DO NOT implement the Confidence Gate decision matrix or instantiate thinkN storage classes.
+* DO NOT handle user interaction loops.
+* You have exclusive write access ONLY to the src/ai/* and src/prompts/* directories.
+Exhaustive Technical Requirements
+1. Robust API Client Implementation (src/ai/LLMClient.ts)
+* Implement a generic, highly reliable LLM client utilizing native fetch or a standard AI SDK. The client must be capable of communicating with a standard Chat Completions REST endpoint (e.g., OpenAI API format or Anthropic Messages API format).
+* The client MUST strictly enforce JSON Schema outputs (Structured Outputs) to guarantee that the model's response can be safely parsed into TypeScript interfaces without requiring complex regex extraction.
+* Implement robust error handling for network timeouts, rate limits (HTTP 429), and malformed JSON payloads, incorporating exponential backoff retries.
+2. Plan Generation & Belief Extraction Prompt (src/prompts/Extractor.ts)
+* Engineer an exhaustive master system prompt that ingests the natural language User Task and the stringified Repo Context.
+* The prompt MUST explicitly instruct the LLM to output a JSON object perfectly matching the AgentPlan interface. Code generation is strictly prohibited at this stage.
+* The instructions must demand that the LLM identify all latent assumptions regarding software architecture, user intent, dependencies, and environment constraints. The LLM must categorize each assumption strictly as REPO_FACT, TASK_BELIEF, or AGENT_ASSUMPTION.
+* The prompt must require the LLM to assign a RiskLevel ('LOW', 'MEDIUM', 'HIGH') based on the potential blast radius of the assumption being incorrect, alongside an initial, objective confidenceScore (0.0 to 1.0).
+3. Patch Generation Prompt (src/prompts/PatchGenerator.ts)
+* Engineer a secondary system prompt that ingests the original user task, the fully validated BeliefGraph state array, and the previously generated AgentPlan.
+* Instruct the LLM to output a raw unified diff or a comprehensive file overwrite block.
+* The prompt MUST contain the explicit directive: "You are strictly bound by the validated constraints provided in the belief state. Any code generated that violates a USER_CONSTRAINT or conflicts with a confirmed REPO_FACT will be rejected by the validation engine."
+Expected Deliverable
+A purely functional, highly reliable AI module exporting two primary asynchronous functions: generatePlanAndBeliefs(task, context) and generateCodePatch(task, validatedBeliefs). These functions must consistently execute network calls and return strictly typed, parsed TypeScript objects, abstracting all LLM complexity away from the main controller.
+Agent 5 Master Prompt: Confidence Gate, Validation, and E2E Orchestration
+Agent 5: Confidence-to-Action Gate, Validator & E2E Pipeline Orchestrator Master Specification
+Role Designator: Policy Engine & Systems Integrator
+Primary Objective: Construct the deterministic Confidence Gate policy engine that decides whether to proceed, block, or interrogate the user. Wire all disparate modules from Agents 1 through 4 into a cohesive, synchronous main execution pipeline.
+Strict Operational Boundaries (Anti-Overlap Protocol)
+* You must operate under the assumption that the Webview (Agent 1), Context Collector (Agent 2), thinkN State Manager (Agent 3), and LLM API (Agent 4) are fully constructed and export reliable, typed interfaces.
+* DO NOT recreate their internal logic; your responsibility is strictly importation, composition, and flow control.
+* You have exclusive write access ONLY to the src/gate/*, src/validation/*, and the pipeline binding within src/controller/MainOrchestrator.ts.
+Exhaustive Technical Requirements
+1. Gate Evaluator Policy Engine (src/gate/ConfidenceGate.ts)
+* Implement the core decision function: evaluateState(beliefs: Belief): GateDecision.
+* Strict Decision Logic:
+   * Iterate through the array of beliefs. If ANY belief possesses isValidated === false AND riskLevel === 'HIGH', the function must immediately return ASK_USER.
+   * If ANY belief possesses a confidenceScore < 0.40, the function must return INSPECT_MORE.
+   * If ANY belief contains a CONTRADICTED_BY edge against a known REPO_FACT or USER_CONSTRAINT, the function must return BLOCK.
+   * If none of the above conditions are met, the function returns PROCEED.
+2. Clarification Question Generator (src/gate/QuestionGenerator.ts)
+* Implement a utility function that ingests the array of unverified high-risk beliefs and formats them into concise, human-readable inquiries (e.g., "The agent assumes the authentication flow is stateless. Is this correct?").
+* The function must return an array of ClarificationQuestion objects formatted for the Webview UI.
+3. Post-Patch Validator Engine (src/validation/PatchValidator.ts)
+* Implement a secondary heuristic analysis function validateGeneratedPatch(diffString: string, validatedBeliefs: Belief): ValidationResult.
+* The function must scan the generated unified diff string. If the diff indicates modifications to files, imports, or logic explicitly protected by a USER_CONSTRAINT belief, the function must flag it as a severe violation and toggle isValid to false.
+4. Main Controller Pipeline (src/controller/MainOrchestrator.ts)
+* Architect the master end-to-end asynchronous function runGuardedTask(userTask: string).
+* Execution Sequence:
+   1. Invoke the Context Collector (Agent 2) to gather workspace state.
+   2. Invoke the LLM Pipeline (Agent 4) to generate the execution plan and isolate raw beliefs.
+   3. Push the parsed beliefs into the thinkN Graph State Manager (Agent 3).
+   4. Invoke the Evidence Locator (Agent 2) to autonomously ground the beliefs against the file system.
+   5. Invoke the Gate Evaluator (Agent 5).
+   6. If the decision is ASK_USER, dispatch a payload to the Webview (Agent 1) and suspend pipeline execution.
+   7. Upon receiving the user's asynchronous reply, push the newly confirmed USER_CONSTRAINT beliefs into the thinkN Graph (Agent 3).
+   8. Loop back to step 5 (Evaluate Gate).
+   9. Once the decision is PROCEED, invoke the LLM Pipeline (Agent 4) to generate the final code patch.
+   10. Run the generated diff through the Post-Patch Validator (Agent 5).
+   11. If valid, dispatch the diff payload to the Webview/VS Code Diff API (Agent 1) for final human approval.
+Expected Deliverable
+The operational brain of the BeliefGuard extension. A highly cohesive controller module that successfully imports all distinct sub-systems, rigidly enforces the Confidence Gate policy, orchestrates the complex asynchronous data flow, and absolutely guarantees that the underlying LLM agent cannot execute code modifications until the policy gate opens.
+Conclusion
+The BeliefGuard architecture represents a fundamental shift in how autonomous software development tools are managed. By aggressively deprecating the reliance on hidden chain-of-thought processes in favor of an explicit, deterministic Repo Belief Graph, the system guarantees architectural coherence. The integration of the Confidence-to-Action Gate ensures that the inherent stochasticity of large language models is strictly bounded by programmable risk thresholds, virtually eliminating the threat of silent agent drift.1
+Furthermore, the deep structural integration of the thinkN SDK provides the necessary stateful persistence and contradiction-tracking required to maintain logic across complex, multi-turn development sessions.4 By adopting the highly partitioned, multi-agent engineering strategy outlined in the Master Prompts, development teams can bypass the standard friction of hackathon execution, deploying a robust, enterprise-grade governance layer within a severely constrained timeline. The resulting extension will not merely act as an assumption checker, but as a definitive belief infrastructure for the next generation of coding agents.
+Works cited
+1. message.txt
+2. AI for Network & Infrastructure Automation: A Practical Adoption Guide - Itential, accessed April 11, 2026, https://www.itential.com/resource/guide/adopting-ai-for-network-infrastructure-automation/
+3. Student hackathon gives Sun Devils startup opportunities - The Arizona State Press, accessed April 11, 2026, https://www.statepress.com/article/2025/11/scitech-startup-village-villagehack-hackathon
+4. Hacking Artificial Intelligence: A Leader's Guide from Deepfakes to Breaking Deep Learning [1 ed.] 1538155087, 9781538155080 - DOKUMEN.PUB, accessed April 11, 2026, https://dokumen.pub/hacking-artificial-intelligence-a-leaders-guide-from-deepfakes-to-breaking-deep-learning-1nbsped-1538155087-9781538155080.html
+5. AI for APIs: Techniques for AI-Assisted SDK Generation - The New Stack, accessed April 11, 2026, https://thenewstack.io/ai-for-apis-techniques-for-ai-assisted-sdk-generation/

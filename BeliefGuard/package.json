@@ -1,0 +1,67 @@
+{
+  "name": "beliefguard",
+  "displayName": "BeliefGuard",
+  "description": "A belief-aware governance layer that intercepts coding agents to validate assumptions before edits.",
+  "version": "0.1.0",
+  "publisher": "beliefguard-team",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:beliefguard.sidebarView",
+    "onCommand:beliefguard.startGuardedTask",
+    "onCommand:beliefguard.showDiff"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "beliefguard.startGuardedTask",
+        "title": "BeliefGuard: Start Guarded Task"
+      },
+      {
+        "command": "beliefguard.showDiff",
+        "title": "BeliefGuard: Review Proposed Diff"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "beliefguard-sidebar",
+          "title": "BeliefGuard",
+          "icon": "$(shield)"
+        }
+      ]
+    },
+    "views": {
+      "beliefguard-sidebar": [
+        {
+          "type": "webview",
+          "id": "beliefguard.sidebarView",
+          "name": "BeliefGuard"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/uuid": "^10.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^3.0.52",
+    "ai": "^6.0.158",
+    "beliefs": "^0.2.1",
+    "uuid": "^13.0.0",
+    "zod": "^4.3.6"
+  }
+}
