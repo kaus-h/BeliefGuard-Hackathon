@@ -11,9 +11,9 @@
  *                  cloud persistence, native contradiction detection,
  *                  clarity scoring, and belief-level audit trails.
  *
- * All thinkN SDK calls are fire-and-forget with try/catch wrappers.
- * If the SDK is unavailable (missing key, network error, rate limit),
- * the system degrades gracefully to local-only operation.
+ * During guarded-task execution, thinkN is treated as a hard dependency.
+ * The local store remains the synchronous source of truth for gate logic,
+ * but thinkN errors are surfaced and propagated instead of being swallowed.
  *
  * Responsibilities
  * ────────────────
@@ -26,19 +26,49 @@
  * @see https://www.thinkn.ai/dev/sdk/core-api — Full SDK API reference
  * @see https://www.thinkn.ai/dev/start/hack-guide — Hackathon integration guide
  */
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BeliefStateManager = void 0;
-const beliefs_1 = __importDefault(require("beliefs"));
+const beliefs_1 = __importStar(require("beliefs"));
 const uuid_1 = require("uuid");
 const SessionStore_1 = require("../state/SessionStore");
 // ── Constants ───────────────────────────────────────────────────────────
 /** Beliefs with a confidence score at or above this value are auto-validated. */
 const VALIDATION_THRESHOLD = 0.85;
-/** Maximum time to wait for a thinkN network call before falling back locally. */
-const REMOTE_CALL_TIMEOUT_MS = 30000;
+/** Maximum time to wait for a thinkN network call before aborting locally. */
+const REMOTE_CALL_TIMEOUT_MS = 120000;
 // ── BeliefStateManager ─────────────────────────────────────────────────
 class BeliefStateManager {
     /**
@@ -56,9 +86,14 @@ class BeliefStateManager {
     namespace = 'beliefguard-session';
     currentThreadId = null;
     diagnosticReporter;
-    constructor() {
+    constructor(workspaceName) {
         this.store = SessionStore_1.SessionStore.getInstance();
         this.apiKey = process.env.BELIEFS_KEY || '';
+        if (workspaceName) {
+            // Sanitize to a safe slug for thinkN namespace scoping
+            const slug = workspaceName.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').slice(0, 40);
+            this.namespace = `beliefguard-${slug}`;
+        }
         this.thinkN = this.createClient();
     }
     beginTask(threadId) {
@@ -240,7 +275,10 @@ class BeliefStateManager {
         }
         catch (error) {
             console.warn('[BeliefGuard] thinkN read() failed:', error);
-            this.reportDiagnostic('thinkN read failed', error instanceof Error ? error.message : String(error), 'error', this.getScopeMetadata());
+            this.reportDiagnostic('thinkN read failed', error instanceof Error ? error.message : String(error), 'error', {
+                ...this.getScopeMetadata(),
+                ...this.getThinkNErrorMetadata(error),
+            });
             throw this.wrapThinkNError(error, 'read');
         }
     }
@@ -249,7 +287,7 @@ class BeliefStateManager {
      * Returns a prompt string enriched with thinkN's accumulated belief state.
      *
      * @param input  Optional task description or user message.
-     * @returns      The thinkN-generated context prompt, or empty string on failure.
+     * @returns      The thinkN-generated context prompt.
      * @see https://www.thinkn.ai/dev/sdk/core-api#beliefsbeforeinput
      */
     async getBeliefContext(input) {
@@ -272,7 +310,10 @@ class BeliefStateManager {
         }
         catch (error) {
             console.warn('[BeliefGuard] thinkN before() failed:', error);
-            this.reportDiagnostic('thinkN before failed', error instanceof Error ? error.message : String(error), 'error', this.getScopeMetadata());
+            this.reportDiagnostic('thinkN before failed', error instanceof Error ? error.message : String(error), 'error', {
+                ...this.getScopeMetadata(),
+                ...this.getThinkNErrorMetadata(error),
+            });
             throw this.wrapThinkNError(error, 'before');
         }
     }
@@ -311,6 +352,7 @@ class BeliefStateManager {
             this.reportDiagnostic('thinkN after failed', error instanceof Error ? error.message : String(error), 'error', {
                 ...this.getScopeMetadata(),
                 source: source ?? 'unspecified',
+                ...this.getThinkNErrorMetadata(error),
             });
             throw this.wrapThinkNError(error, 'after');
         }
@@ -318,7 +360,7 @@ class BeliefStateManager {
     // ── Private: thinkN sync helpers ────────────────────────────────────
     /**
      * Push a single belief to thinkN via `beliefs.add()`.
-     * Fire-and-forget — errors are logged but do not break the pipeline.
+     * Errors are surfaced so guarded execution can fail fast.
      */
     async syncAddBelief(belief) {
         this.ensureReady();
@@ -332,6 +374,7 @@ class BeliefStateManager {
             await this.withTimeout(this.thinkN.add(belief.statement, {
                 confidence: belief.confidenceScore,
                 type: this.mapBeliefTypeToThinkN(belief.type),
+                evidence: belief.evidenceIds.length > 0 ? belief.evidenceIds.join(', ') : undefined,
                 source: `beliefguard:${belief.type}`,
             }), 'thinkN add()');
             this.reportDiagnostic('thinkN add succeeded', `Belief synced to thinkN: ${belief.statement}`, 'success', {
@@ -347,6 +390,7 @@ class BeliefStateManager {
                 ...this.getScopeMetadata(),
                 beliefId: belief.id,
                 beliefType: belief.type,
+                ...this.getThinkNErrorMetadata(error),
             });
             throw this.wrapThinkNError(error, 'add');
         }
@@ -376,6 +420,7 @@ class BeliefStateManager {
                 ...this.getScopeMetadata(),
                 evidenceId: evidence.id,
                 evidenceSource: evidence.uri,
+                ...this.getThinkNErrorMetadata(error),
             });
             throw this.wrapThinkNError(error, 'evidence-sync');
         }
@@ -390,7 +435,10 @@ class BeliefStateManager {
         }
         catch (error) {
             console.warn('[BeliefGuard] thinkN reset() failed:', error);
-            this.reportDiagnostic('thinkN reset failed', error instanceof Error ? error.message : String(error), 'error', this.getScopeMetadata());
+            this.reportDiagnostic('thinkN reset failed', error instanceof Error ? error.message : String(error), 'error', {
+                ...this.getScopeMetadata(),
+                ...this.getThinkNErrorMetadata(error),
+            });
             throw this.wrapThinkNError(error, 'reset');
         }
     }
@@ -408,12 +456,16 @@ class BeliefStateManager {
         ]);
     }
     createClient(threadId) {
-        return new beliefs_1.default({
+        const config = {
             apiKey: this.apiKey,
             agent: this.agentId,
             namespace: this.namespace,
+            timeout: REMOTE_CALL_TIMEOUT_MS,
+            debug: process.env.BELIEFS_DEBUG === 'true',
+            writeScope: 'thread',
             ...(threadId ? { thread: threadId } : {}),
-        });
+        };
+        return new beliefs_1.default(config);
     }
     getScopeMetadata() {
         return {
@@ -430,9 +482,45 @@ class BeliefStateManager {
             data,
         });
     }
+    getThinkNErrorMetadata(error) {
+        if (error instanceof beliefs_1.BetaAccessError) {
+            return {
+                code: error.code,
+                signupUrl: error.signupUrl,
+            };
+        }
+        if (error instanceof beliefs_1.BeliefsError) {
+            return {
+                code: error.code,
+                retryable: error.retryable,
+                retryAfterMs: error.retryAfterMs,
+            };
+        }
+        return {};
+    }
     wrapThinkNError(error, operation) {
+        const scope = `[thread=${this.currentThreadId ?? 'unbound'}, namespace=${this.namespace}, agent=${this.agentId}]`;
+        if (error instanceof beliefs_1.BetaAccessError) {
+            const wrapped = new Error(`thinkN ${operation} requires beta access ${scope}: ${error.message}`, { cause: error });
+            wrapped.name = error.name;
+            wrapped.code = error.code;
+            wrapped.signupUrl = error.signupUrl;
+            return wrapped;
+        }
+        if (error instanceof beliefs_1.BeliefsError) {
+            const wrapped = new Error(`thinkN ${operation} failed ${scope}: ${error.message}`, { cause: error });
+            wrapped.name = error.name;
+            wrapped.code = error.code;
+            wrapped.retryable = error.retryable;
+            if (error.retryAfterMs !== undefined) {
+                wrapped.retryAfterMs = error.retryAfterMs;
+            }
+            return wrapped;
+        }
         const message = error instanceof Error ? error.message : String(error);
-        return new Error(`thinkN ${operation} failed [thread=${this.currentThreadId ?? 'unbound'}, namespace=${this.namespace}, agent=${this.agentId}]: ${message}`);
+        return new Error(`thinkN ${operation} failed ${scope}: ${message}`, {
+            cause: error instanceof Error ? error : undefined,
+        });
     }
     /**
      * Map BeliefGuard's internal type taxonomy to thinkN's belief types.

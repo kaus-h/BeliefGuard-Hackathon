@@ -64,6 +64,54 @@ export interface PatchSummary {
 export interface PatchGenerationResult {
     assistantMessage: string;
     diffPatch: string;
+    structuredPatch?: Array<{
+        path: string;
+        status: 'ADDED' | 'MODIFIED' | 'DELETED';
+        patch: string;
+        summary?: string;
+        additions?: number;
+        deletions?: number;
+        oldPath?: string;
+        newPath?: string;
+    }>;
+}
+/** High-level file operation used by the structured patch envelope. */
+export type StructuredPatchAction = 'ADD_FILE' | 'UPDATE_FILE' | 'DELETE_FILE';
+/** A single file block within a structured patch payload. */
+export interface StructuredPatchBlock {
+    action: StructuredPatchAction;
+    path: string;
+    content: string;
+}
+/** Parsed structured patch payload returned by the model. */
+export interface StructuredPatchDocument {
+    blocks: StructuredPatchBlock[];
+}
+/** UI review state for a single file inside a structured patch. */
+export type PerFileReviewDecision = 'PENDING' | 'APPROVE' | 'REJECT';
+export interface PerFilePatchReview {
+    path: string;
+    action: StructuredPatchAction;
+    decision: PerFileReviewDecision;
+    summary?: string;
+    diffPreview?: string;
+}
+export interface StructuredPatchReviewState {
+    currentIndex: number;
+    files: PerFilePatchReview[];
+}
+export interface FileChangeReadyPayload {
+    changeId?: string;
+    fileChange: {
+        path: string;
+        diffPatch: string;
+        summary?: PatchFileSummary;
+    };
+    index?: number;
+    totalFiles?: number;
+}
+export interface StreamingChunkPayload {
+    chunk: string;
 }
 export type AuditLevel = 'info' | 'success' | 'warning' | 'error';
 export type AuditPhase = 'session' | 'context' | 'extraction' | 'beliefs' | 'thinkn' | 'grounding' | 'gate' | 'questions' | 'patch' | 'validation';
@@ -89,6 +137,12 @@ export type WebviewToExtensionMessage = {
         beliefId: string;
         answer: string;
     };
+} | {
+    type: 'APPROVE_FILE_CHANGE';
+    payload: FileChangeReadyPayload;
+} | {
+    type: 'REJECT_FILE_CHANGE';
+    payload: FileChangeReadyPayload;
 } | {
     type: 'REVIEW_DIFF';
 } | {
@@ -125,16 +179,50 @@ export type ExtensionToWebviewMessage = {
         event: AuditEvent;
     };
 } | {
+    type: 'FILE_CHANGE_READY';
+    payload: FileChangeReadyPayload;
+} | {
+    type: 'FILE_REVIEW_COMPLETE';
+    payload: {
+        appliedPaths: string[];
+        rejectedPaths: string[];
+    };
+} | {
+    type: 'STREAMING_CHUNK';
+    payload: StreamingChunkPayload;
+} | {
     type: 'PATCH_READY';
     payload: {
         diffPatch: string;
         summary: PatchSummary;
     };
 } | {
+    type: 'STRUCTURED_PATCH_READY';
+    payload: {
+        assistantMessage: string;
+        patch: StructuredPatchDocument;
+        summary: PatchSummary;
+    };
+} | {
+    type: 'STRUCTURED_PATCH_FILE_READY';
+    payload: {
+        review: PerFilePatchReview;
+        index: number;
+        totalFiles: number;
+    };
+} | {
     type: 'BLOCKED';
     payload: {
         reason: string;
         violations: Belief[];
+    };
+} | {
+    type: 'PATCH_FILE_DECISION_REQUESTED';
+    payload: {
+        path: string;
+        action: StructuredPatchAction;
+        index: number;
+        totalFiles: number;
     };
 } | {
     type: 'ERROR';

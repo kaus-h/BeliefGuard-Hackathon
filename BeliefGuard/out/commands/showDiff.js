@@ -41,6 +41,15 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.showDiff = showDiff;
 const vscode = __importStar(require("vscode"));
 const unifiedDiff_1 = require("../utils/unifiedDiff");
+async function readFileText(uri) {
+    try {
+        const document = await vscode.workspace.openTextDocument(uri);
+        return document.getText();
+    }
+    catch {
+        return '';
+    }
+}
 /**
  * Opens a VS Code diff editor showing the proposed patch applied to
  * the active document.
@@ -50,17 +59,38 @@ const unifiedDiff_1 = require("../utils/unifiedDiff");
  *   than a unified diff so we can display it without a diff-apply lib.
  */
 async function showDiff(diffPatch) {
+    const structuredChanges = (0, unifiedDiff_1.parseStructuredPatchText)(diffPatch).blocks;
+    const useStructuredPatch = structuredChanges.length > 0;
     const normalizedDiff = (0, unifiedDiff_1.normalizeUnifiedDiffText)(diffPatch);
     const parsedChanges = (0, unifiedDiff_1.parseUnifiedDiff)(normalizedDiff);
     const activeEditor = vscode.window.activeTextEditor;
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (parsedChanges.length === 0) {
+    if (!useStructuredPatch && parsedChanges.length === 0) {
         throw new Error('No file changes were found in the proposed patch.');
     }
     let selectedRelativePath = activeEditor
         ? vscode.workspace.asRelativePath(activeEditor.document.uri)
         : undefined;
-    if (parsedChanges.length > 1) {
+    if (useStructuredPatch && structuredChanges.length > 1) {
+        const quickPickItems = structuredChanges.map((change) => ({
+            label: change.path,
+            description: change.action === 'ADD_FILE'
+                ? 'Added file'
+                : change.action === 'DELETE_FILE'
+                    ? 'Deleted file'
+                    : 'Modified file',
+        }));
+        const picked = await vscode.window.showQuickPick(quickPickItems, {
+            placeHolder: selectedRelativePath
+                ? `Select a file from the workspace patch to review (active file: ${selectedRelativePath})`
+                : 'Select a file from the workspace patch to review',
+        });
+        if (!picked) {
+            return;
+        }
+        selectedRelativePath = picked.label;
+    }
+    else if (!useStructuredPatch && parsedChanges.length > 1) {
         const quickPickItems = parsedChanges.map((change) => {
             const path = (0, unifiedDiff_1.getUnifiedDiffChangePath)(change, workspaceFolder);
             return {
@@ -82,6 +112,9 @@ async function showDiff(diffPatch) {
         }
         selectedRelativePath = picked.label;
     }
+    else if (useStructuredPatch && structuredChanges.length === 1) {
+        selectedRelativePath = structuredChanges[0].path ?? selectedRelativePath;
+    }
     else {
         selectedRelativePath =
             parsedChanges[0].newPath ??
@@ -94,7 +127,36 @@ async function showDiff(diffPatch) {
     let proposedContent;
     let displayFileName = 'workspace-change';
     let displayFilePath = 'workspace-change';
-    if (selectedRelativePath) {
+    if (useStructuredPatch && selectedRelativePath) {
+        const matchingChange = structuredChanges.find((change) => change.path === selectedRelativePath)
+            ?? structuredChanges[0];
+        const targetPath = workspaceFolder
+            ? (0, unifiedDiff_1.resolveWorkspaceRelativePath)(workspaceFolder, matchingChange.path)
+            : matchingChange.path;
+        displayFileName = targetPath?.split(/[\\/]/).pop() || targetPath || 'workspace-change';
+        displayFilePath = targetPath || matchingChange.path || displayFileName;
+        if (workspaceFolder && targetPath) {
+            originalUri = vscode.Uri.joinPath(workspaceFolder.uri, targetPath);
+            originalContent = matchingChange.action === 'ADD_FILE' ? '' : await readFileText(originalUri);
+            try {
+                proposedContent = (0, unifiedDiff_1.applyStructuredPatchToText)(originalContent, matchingChange);
+            }
+            catch (error) {
+                console.warn('[BeliefGuard] Failed to build diff preview from structured patch:', error);
+                proposedContent = matchingChange.action === 'DELETE_FILE'
+                    ? ''
+                    : matchingChange.content;
+            }
+        }
+        else {
+            originalUri = vscode.Uri.parse('untitled:Original');
+            originalContent = '';
+            proposedContent = matchingChange.action === 'DELETE_FILE'
+                ? ''
+                : (0, unifiedDiff_1.applyStructuredPatchToText)('', matchingChange);
+        }
+    }
+    else if (selectedRelativePath) {
         const matchingChange = (0, unifiedDiff_1.findMatchingDiffChange)(parsedChanges, selectedRelativePath, workspaceFolder);
         if (matchingChange) {
             const rawTargetPath = matchingChange.newPath ?? matchingChange.oldPath;

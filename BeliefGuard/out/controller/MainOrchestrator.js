@@ -58,6 +58,7 @@ const uuid_1 = require("uuid");
 // ── Agent 2: Context & Evidence ─────────────────────────────────────
 const WorkspaceScanner_1 = require("../context/WorkspaceScanner");
 const EvidenceLocator_1 = require("../context/EvidenceLocator");
+const fs_1 = require("../utils/fs");
 // ── Agent 3: Belief State Manager ───────────────────────────────────
 const ThinkNClient_1 = require("../beliefs/ThinkNClient");
 const BeliefGraph_1 = require("../beliefs/BeliefGraph");
@@ -73,6 +74,8 @@ const unifiedDiff_1 = require("../utils/unifiedDiff");
 const MAX_INSPECT_CYCLES = 2;
 /** Maximum number of ASK_USER → re-evaluate loops before aborting. */
 const MAX_CLARIFICATION_LOOPS = 5;
+/** Maximum number of bounded read-only context expansion passes before patch generation. */
+const MAX_CONTEXT_EXPANSION_ITERATIONS = 3;
 /**
  * MainOrchestrator — End-to-End Pipeline Controller
  *
@@ -88,7 +91,8 @@ class MainOrchestrator {
     constructor(provider) {
         this.provider = provider;
         this.llmClient = new LLMClient_1.LLMClient();
-        this.beliefManager = new ThinkNClient_1.BeliefStateManager();
+        const workspaceName = vscode.workspace.workspaceFolders?.[0]?.name;
+        this.beliefManager = new ThinkNClient_1.BeliefStateManager(workspaceName);
         this.beliefManager.setDiagnosticReporter((event) => {
             this.audit('thinkn', event.title, event.detail, event.level, event.data);
         });
@@ -148,70 +152,9 @@ class MainOrchestrator {
                 // Pipeline terminates — unresolvable contradiction
                 return;
             }
-            // ── Step 9: Patch Generation (Agent 4) ──────────────────
-            this.provider.postProcessing('Generating code patch with validated beliefs…');
+            // ── Steps 9-11: Context Expansion → Patch Generation → Review ──
             const allBeliefs = this.beliefManager.getAllBeliefs();
-            const patchResult = await this.llmClient.generateCodePatch(userTask, agentPlan, allBeliefs);
-            const diffPatch = (0, unifiedDiff_1.normalizeUnifiedDiffText)(patchResult.diffPatch);
-            if (!diffPatch.trim()) {
-                this.provider.postAssistantMessage('BeliefGuard', patchResult.assistantMessage || 'BeliefGuard needs a concrete coding task before it can produce workspace edits.');
-                this.audit('patch', 'No actionable patch produced', 'The model returned no workspace diff for this task. This usually means the request was conversational or did not map to a concrete repository edit.', 'warning', {
-                    targetFiles: agentPlan.targetFiles,
-                    assistantMessage: patchResult.assistantMessage,
-                });
-                this.provider.postError('No actionable workspace patch was produced. Please provide a concrete coding task tied to repository files.');
-                return;
-            }
-            const parsedPatchChanges = (0, unifiedDiff_1.parseUnifiedDiff)(diffPatch);
-            if (parsedPatchChanges.length === 0) {
-                this.provider.postAssistantMessage('BeliefGuard', patchResult.assistantMessage || 'BeliefGuard could not turn this request into a valid workspace diff.');
-                this.audit('patch', 'Patch generation returned invalid diff content', 'The model produced output, but it did not contain a valid unified diff.', 'error', {
-                    targetFiles: agentPlan.targetFiles,
-                    diffPreview: diffPatch.split(/\r?\n/).slice(0, 40).join('\n'),
-                });
-                this.provider.postError('BeliefGuard did not receive a valid workspace diff from the model. Please refine the task and try again.');
-                return;
-            }
-            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-            const unresolvedPatchPaths = parsedPatchChanges.filter((change) => {
-                const resolvedPath = (0, unifiedDiff_1.getUnifiedDiffChangePath)(change, workspaceFolder);
-                return !resolvedPath || resolvedPath === 'unknown';
-            });
-            this.audit('patch', 'Patch target resolution summary', `Resolved ${parsedPatchChanges.length - unresolvedPatchPaths.length}/${parsedPatchChanges.length} patch target(s) to workspace-relative files.`, unresolvedPatchPaths.length > 0 ? 'warning' : 'info', parsedPatchChanges.map((change) => ({
-                rawOldPath: change.oldPath,
-                rawNewPath: change.newPath,
-                resolvedPath: (0, unifiedDiff_1.getUnifiedDiffChangePath)(change, workspaceFolder),
-            })));
-            if (unresolvedPatchPaths.length > 0) {
-                this.provider.postAssistantMessage('BeliefGuard', patchResult.assistantMessage || 'BeliefGuard generated a patch proposal, but some file targets did not map cleanly into the workspace.');
-                this.audit('patch', 'Patch blocked due to unresolved targets', 'The generated patch referenced one or more unresolved or non-workspace file targets.', 'error', unresolvedPatchPaths.map((change) => ({
-                    rawOldPath: change.oldPath,
-                    rawNewPath: change.newPath,
-                    resolvedPath: (0, unifiedDiff_1.getUnifiedDiffChangePath)(change, workspaceFolder),
-                })));
-                this.provider.postError('BeliefGuard blocked the patch because one or more generated file targets did not resolve to real workspace-relative paths.');
-                return;
-            }
-            this.audit('patch', 'Patch generated', `Generated unified diff with ${diffPatch.split(/\r?\n/).length} lines for ${agentPlan.targetFiles.length} target files.`, 'success', {
-                targetFiles: agentPlan.targetFiles,
-                diffPreview: diffPatch.split(/\r?\n/).slice(0, 40).join('\n'),
-            });
-            // ── Step 10: Post-Patch Validation (Agent 5) ────────────
-            this.provider.postProcessing('Validating generated patch against constraints…');
-            const validationResult = (0, PatchValidator_1.validateGeneratedPatch)(diffPatch, allBeliefs);
-            const patchSummary = (0, unifiedDiff_1.summarizeUnifiedDiff)(diffPatch);
-            // ── Step 11: Dispatch to Webview (Agent 1) ──────────────
-            if (validationResult.isValid) {
-                this.provider.postAssistantMessage('BeliefGuard', patchResult.assistantMessage);
-                this.audit('validation', 'Patch validation passed', 'Patch satisfied the current validated constraints.', 'success');
-                this.pushBeliefGraphSnapshot();
-                this.provider.postPatchReady(diffPatch, patchSummary);
-            }
-            else {
-                this.audit('validation', 'Patch validation failed', `Patch violated ${validationResult.violations.length} constraint(s).`, 'error', validationResult.violations);
-                this.pushBeliefGraphSnapshot();
-                this.provider.postBlocked('The generated patch violates one or more user constraints.', validationResult.violations);
-            }
+            await this.runPatchGeneration(userTask, agentPlan, allBeliefs, enrichedContext);
         }
         catch (error) {
             console.error('[BeliefGuard Orchestrator] Pipeline error:', error);
@@ -455,6 +398,335 @@ class MainOrchestrator {
                 console.warn('[BeliefGuard] Clarification timeout — proceeding with partial answers.');
                 this.audit('questions', 'Clarification timeout reached', 'Proceeding with partial user answers after waiting 5 minutes.', 'warning');
                 finish();
+            }, 5 * 60 * 1000);
+            disposables.push({ dispose: () => clearTimeout(timer) });
+        });
+    }
+    async runPatchGeneration(userTask, agentPlan, allBeliefs, initialContext) {
+        const expandedContext = await this.expandPatchGenerationContext(userTask, agentPlan, allBeliefs, initialContext);
+        this.provider.postProcessing('Generating code patch with validated beliefs…');
+        this.provider.postStreamingChunk('\n[patch generation]\n');
+        const patchResult = await this.llmClient.generateCodePatch(userTask, agentPlan, allBeliefs, expandedContext, {
+            onChunk: (chunk) => this.provider.postStreamingChunk(chunk),
+        });
+        const structuredPatchText = this.extractStructuredPatchText(patchResult);
+        if (structuredPatchText) {
+            await this.handleStructuredPatchResult(structuredPatchText, patchResult, agentPlan, allBeliefs);
+            return;
+        }
+        await this.handleUnifiedDiffPatchResult((0, unifiedDiff_1.normalizeUnifiedDiffText)(patchResult.diffPatch), patchResult, agentPlan, allBeliefs);
+    }
+    async expandPatchGenerationContext(userTask, agentPlan, allBeliefs, initialContext) {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) {
+            return initialContext;
+        }
+        let expandedContext = initialContext;
+        const seenPaths = new Set();
+        for (let iteration = 1; iteration <= MAX_CONTEXT_EXPANSION_ITERATIONS; iteration++) {
+            this.provider.postProcessing(`Running bounded context expansion (${iteration}/${MAX_CONTEXT_EXPANSION_ITERATIONS})…`);
+            this.provider.postStreamingChunk(`\n[context expansion ${iteration}]\n`);
+            try {
+                const expansion = await this.llmClient.requestContextExpansion(userTask, expandedContext, allBeliefs, agentPlan, {
+                    onChunk: (chunk) => this.provider.postStreamingChunk(chunk),
+                });
+                const requestedPaths = expansion.requestedFiles
+                    .map((requestedPath) => this.normalizeRequestedWorkspacePath(requestedPath))
+                    .filter((requestedPath) => Boolean(requestedPath))
+                    .filter((requestedPath) => !seenPaths.has(requestedPath))
+                    .slice(0, 5);
+                if (requestedPaths.length === 0) {
+                    this.audit('context', 'Context expansion complete', 'No additional repository files were requested before patch generation.', 'info', {
+                        iteration,
+                        assistantMessage: expansion.assistantMessage,
+                        rationale: expansion.rationale,
+                    });
+                    break;
+                }
+                const loadedFiles = [];
+                for (const requestedPath of requestedPaths) {
+                    seenPaths.add(requestedPath);
+                    const requestedUri = vscode.Uri.joinPath(workspaceFolder.uri, requestedPath);
+                    const content = await (0, fs_1.safeReadFile)(requestedUri, 400);
+                    if (content !== null) {
+                        loadedFiles.push({ path: requestedPath, content });
+                    }
+                }
+                if (loadedFiles.length === 0) {
+                    this.audit('context', 'Context expansion requested unreadable files', 'The model asked for more files, but none of them could be read safely.', 'warning', {
+                        iteration,
+                        requestedPaths,
+                        rationale: expansion.rationale,
+                    });
+                    break;
+                }
+                expandedContext += `\n\n--- Context Expansion Iteration ${iteration} ---\n${loadedFiles
+                    .map(({ path, content }) => `FILE: ${path}\n${content}`)
+                    .join('\n\n')}`;
+                this.audit('context', 'Context expansion appended repository files', `Appended ${loadedFiles.length} additional file(s) before patch generation.`, 'success', {
+                    iteration,
+                    requestedPaths: loadedFiles.map((file) => file.path),
+                    rationale: expansion.rationale,
+                });
+            }
+            catch (error) {
+                this.audit('context', 'Context expansion failed', 'Continuing with the existing repository context because the bounded expansion phase failed.', 'warning', {
+                    iteration,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+                break;
+            }
+        }
+        return expandedContext;
+    }
+    async handleStructuredPatchResult(structuredPatchText, patchResult, agentPlan, allBeliefs) {
+        const normalizedStructuredPatch = (0, unifiedDiff_1.normalizeStructuredPatchText)(structuredPatchText);
+        const structuredPatch = (0, unifiedDiff_1.parseStructuredPatchText)(normalizedStructuredPatch);
+        if (structuredPatch.blocks.length === 0) {
+            this.provider.postAssistantMessage('BeliefGuard', patchResult.assistantMessage || 'BeliefGuard could not turn this request into a valid structured patch.');
+            this.audit('patch', 'Structured patch generation returned no file blocks', 'The model produced structured patch markers, but no valid file blocks were parseable.', 'error', {
+                targetFiles: agentPlan.targetFiles,
+                diffPreview: normalizedStructuredPatch.split(/\r?\n/).slice(0, 40).join('\n'),
+            });
+            this.provider.postError('BeliefGuard did not receive a valid structured patch from the model. Please refine the task and try again.');
+            return;
+        }
+        this.audit('patch', 'Structured patch generated', `Generated structured patch with ${structuredPatch.blocks.length} file block(s).`, 'success', {
+            targetFiles: agentPlan.targetFiles,
+            diffPreview: normalizedStructuredPatch.split(/\r?\n/).slice(0, 40).join('\n'),
+        });
+        this.provider.postProcessing('Validating structured patch against constraints…');
+        const validationResult = (0, PatchValidator_1.validateGeneratedPatch)(normalizedStructuredPatch, allBeliefs);
+        if (!validationResult.isValid) {
+            this.audit('validation', 'Structured patch validation failed', `Patch violated ${validationResult.violations.length} constraint(s).`, 'error', validationResult.violations);
+            this.pushBeliefGraphSnapshot();
+            this.provider.postBlocked('The generated patch violates one or more user constraints.', validationResult.violations);
+            return;
+        }
+        const patchSummary = (0, unifiedDiff_1.summarizeStructuredPatch)(normalizedStructuredPatch);
+        this.provider.postAssistantMessage('BeliefGuard', patchResult.assistantMessage);
+        this.audit('validation', 'Structured patch validation passed', 'Patch satisfied the current validated constraints and is ready for per-file review.', 'success');
+        this.pushBeliefGraphSnapshot();
+        this.provider.postProcessing('Reviewing file changes one by one…');
+        const appliedPaths = [];
+        const rejectedPaths = [];
+        for (let index = 0; index < structuredPatch.blocks.length; index++) {
+            const block = structuredPatch.blocks[index];
+            const singleFilePatch = this.serializeStructuredPatchBlocks([block]);
+            const changeId = (0, uuid_1.v4)();
+            const summary = patchSummary.files[index] ?? this.buildStructuredFileSummary(block);
+            this.provider.postFileChangeReady({
+                changeId,
+                fileChange: {
+                    path: block.path,
+                    diffPatch: singleFilePatch,
+                    summary,
+                },
+                index: index + 1,
+                totalFiles: structuredPatch.blocks.length,
+            });
+            this.audit('patch', 'Prepared file review', `Queued ${block.path} for review (${index + 1}/${structuredPatch.blocks.length}).`, 'info', {
+                path: block.path,
+                action: block.action,
+                summary,
+            });
+            try {
+                await vscode.commands.executeCommand('beliefguard.showDiff');
+            }
+            catch (error) {
+                this.audit('patch', 'Automatic diff preview failed', `BeliefGuard could not automatically open the diff for ${block.path}. The user can still review it from the sidebar.`, 'warning', {
+                    path: block.path,
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            }
+            const approved = await this.awaitFileReviewDecision(changeId);
+            if (!approved) {
+                rejectedPaths.push(block.path);
+                this.audit('patch', 'File change rejected', `Skipped ${block.path} because it was rejected during per-file review.`, 'warning', { path: block.path });
+                continue;
+            }
+            await (0, unifiedDiff_1.applyStructuredPatchToWorkspace)(singleFilePatch);
+            appliedPaths.push(block.path);
+            this.audit('patch', 'File change applied', `Applied approved change for ${block.path}.`, 'success', { path: block.path });
+        }
+        this.provider.postFileReviewComplete(appliedPaths, rejectedPaths);
+        this.audit('patch', 'Per-file review completed', `Applied ${appliedPaths.length} file(s) and rejected ${rejectedPaths.length} file(s).`, appliedPaths.length > 0 ? 'success' : 'warning', {
+            appliedPaths,
+            rejectedPaths,
+        });
+        if (appliedPaths.length > 0) {
+            this.provider.postAssistantMessage('BeliefGuard', `Applied ${appliedPaths.length} approved file change(s)${rejectedPaths.length > 0 ? ` and skipped ${rejectedPaths.length} rejected file change(s)` : ''}.`);
+        }
+        else {
+            this.provider.postAssistantMessage('BeliefGuard', 'No file changes were applied during review. You can refine the task and try again.');
+        }
+    }
+    async handleUnifiedDiffPatchResult(diffPatch, patchResult, agentPlan, allBeliefs) {
+        if (!diffPatch.trim()) {
+            this.provider.postAssistantMessage('BeliefGuard', patchResult.assistantMessage || 'BeliefGuard needs a concrete coding task before it can produce workspace edits.');
+            this.audit('patch', 'No actionable patch produced', 'The model returned no workspace diff for this task. This usually means the request was conversational or did not map to a concrete repository edit.', 'warning', {
+                targetFiles: agentPlan.targetFiles,
+                assistantMessage: patchResult.assistantMessage,
+            });
+            this.provider.postError('No actionable workspace patch was produced. Please provide a concrete coding task tied to repository files.');
+            return;
+        }
+        const parsedPatchChanges = (0, unifiedDiff_1.parseUnifiedDiff)(diffPatch);
+        if (parsedPatchChanges.length === 0) {
+            this.provider.postAssistantMessage('BeliefGuard', patchResult.assistantMessage || 'BeliefGuard could not turn this request into a valid workspace diff.');
+            this.audit('patch', 'Patch generation returned invalid diff content', 'The model produced output, but it did not contain a valid unified diff.', 'error', {
+                targetFiles: agentPlan.targetFiles,
+                diffPreview: diffPatch.split(/\r?\n/).slice(0, 40).join('\n'),
+            });
+            this.provider.postError('BeliefGuard did not receive a valid workspace diff from the model. Please refine the task and try again.');
+            return;
+        }
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        const unresolvedPatchPaths = parsedPatchChanges.filter((change) => {
+            const resolvedPath = (0, unifiedDiff_1.getUnifiedDiffChangePath)(change, workspaceFolder);
+            return !resolvedPath || resolvedPath === 'unknown';
+        });
+        this.audit('patch', 'Patch target resolution summary', `Resolved ${parsedPatchChanges.length - unresolvedPatchPaths.length}/${parsedPatchChanges.length} patch target(s) to workspace-relative files.`, unresolvedPatchPaths.length > 0 ? 'warning' : 'info', parsedPatchChanges.map((change) => ({
+            rawOldPath: change.oldPath,
+            rawNewPath: change.newPath,
+            resolvedPath: (0, unifiedDiff_1.getUnifiedDiffChangePath)(change, workspaceFolder),
+        })));
+        if (unresolvedPatchPaths.length > 0) {
+            this.provider.postAssistantMessage('BeliefGuard', patchResult.assistantMessage || 'BeliefGuard generated a patch proposal, but some file targets did not map cleanly into the workspace.');
+            this.audit('patch', 'Patch blocked due to unresolved targets', 'The generated patch referenced one or more unresolved or non-workspace file targets.', 'error', unresolvedPatchPaths.map((change) => ({
+                rawOldPath: change.oldPath,
+                rawNewPath: change.newPath,
+                resolvedPath: (0, unifiedDiff_1.getUnifiedDiffChangePath)(change, workspaceFolder),
+            })));
+            this.provider.postError('BeliefGuard blocked the patch because one or more generated file targets did not resolve to real workspace-relative paths.');
+            return;
+        }
+        this.audit('patch', 'Patch generated', `Generated unified diff with ${diffPatch.split(/\r?\n/).length} lines for ${agentPlan.targetFiles.length} target files.`, 'success', {
+            targetFiles: agentPlan.targetFiles,
+            diffPreview: diffPatch.split(/\r?\n/).slice(0, 40).join('\n'),
+        });
+        this.provider.postProcessing('Validating generated patch against constraints…');
+        const validationResult = (0, PatchValidator_1.validateGeneratedPatch)(diffPatch, allBeliefs);
+        const patchSummary = (0, unifiedDiff_1.summarizeUnifiedDiff)(diffPatch);
+        if (validationResult.isValid) {
+            this.provider.postAssistantMessage('BeliefGuard', patchResult.assistantMessage);
+            this.audit('validation', 'Patch validation passed', 'Patch satisfied the current validated constraints.', 'success');
+            this.pushBeliefGraphSnapshot();
+            this.provider.postPatchReady(diffPatch, patchSummary);
+        }
+        else {
+            this.audit('validation', 'Patch validation failed', `Patch violated ${validationResult.violations.length} constraint(s).`, 'error', validationResult.violations);
+            this.pushBeliefGraphSnapshot();
+            this.provider.postBlocked('The generated patch violates one or more user constraints.', validationResult.violations);
+        }
+    }
+    extractStructuredPatchText(patchResult) {
+        const diffPatch = patchResult.diffPatch?.trim() ?? '';
+        if (this.looksLikeStructuredPatch(diffPatch)) {
+            return (0, unifiedDiff_1.normalizeStructuredPatchText)(diffPatch);
+        }
+        const structuredEntries = patchResult.structuredPatch ?? [];
+        if (structuredEntries.length === 0) {
+            return '';
+        }
+        return this.serializeStructuredPatchEntries(structuredEntries);
+    }
+    serializeStructuredPatchEntries(structuredEntries) {
+        const blocks = structuredEntries
+            .map((entry) => {
+            const path = (entry.path || entry.newPath || entry.oldPath || '').trim();
+            if (!path) {
+                return '';
+            }
+            const header = entry.status === 'ADDED'
+                ? '*** Add File:'
+                : entry.status === 'DELETED'
+                    ? '*** Delete File:'
+                    : '*** Update File:';
+            const body = (entry.patch || '').trim();
+            return body
+                ? `${header} ${path}\n${body}`
+                : `${header} ${path}`;
+        })
+            .filter(Boolean);
+        if (blocks.length === 0) {
+            return '';
+        }
+        return `*** Begin Patch\n${blocks.join('\n')}\n*** End Patch`;
+    }
+    serializeStructuredPatchBlocks(blocks) {
+        const serializedBlocks = blocks.map((block) => {
+            const header = block.action === 'ADD_FILE'
+                ? '*** Add File:'
+                : block.action === 'DELETE_FILE'
+                    ? '*** Delete File:'
+                    : '*** Update File:';
+            return block.content
+                ? `${header} ${block.path}\n${block.content}`
+                : `${header} ${block.path}`;
+        });
+        return `*** Begin Patch\n${serializedBlocks.join('\n')}\n*** End Patch`;
+    }
+    buildStructuredFileSummary(block) {
+        const lines = block.content ? block.content.split(/\r?\n/) : [];
+        const additions = block.action === 'DELETE_FILE'
+            ? 0
+            : lines.filter((line) => line.startsWith('+')).length;
+        const deletions = block.action === 'ADD_FILE'
+            ? 0
+            : lines.filter((line) => line.startsWith('-')).length;
+        return {
+            path: block.path,
+            status: block.action === 'ADD_FILE'
+                ? 'ADDED'
+                : block.action === 'DELETE_FILE'
+                    ? 'DELETED'
+                    : 'MODIFIED',
+            additions,
+            deletions,
+        };
+    }
+    looksLikeStructuredPatch(patchText) {
+        return /^\*\*\* Begin Patch/m.test(patchText) ||
+            /^\*\*\* (?:Update|Add|Delete) File:\s+/m.test(patchText);
+    }
+    normalizeRequestedWorkspacePath(requestedPath) {
+        const normalized = requestedPath.trim().replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.\//, '');
+        if (!normalized) {
+            return null;
+        }
+        if (normalized.startsWith('../') || normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)) {
+            return null;
+        }
+        return normalized;
+    }
+    awaitFileReviewDecision(changeId) {
+        return new Promise((resolve) => {
+            const disposables = [];
+            let settled = false;
+            const finish = (approved) => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                for (const disposable of disposables) {
+                    disposable.dispose();
+                }
+                resolve(approved);
+            };
+            disposables.push(this.provider.onFileChangeApproved((payload) => {
+                if (payload.changeId === changeId) {
+                    finish(true);
+                }
+            }));
+            disposables.push(this.provider.onFileChangeRejected((payload) => {
+                if (payload.changeId === changeId) {
+                    finish(false);
+                }
+            }));
+            const timer = setTimeout(() => {
+                this.audit('patch', 'File review timeout reached', 'BeliefGuard skipped a file change because no approval decision was received in time.', 'warning', { changeId });
+                finish(false);
             }, 5 * 60 * 1000);
             disposables.push({ dispose: () => clearTimeout(timer) });
         });

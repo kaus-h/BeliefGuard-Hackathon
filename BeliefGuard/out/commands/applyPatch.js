@@ -42,7 +42,13 @@ async function applyPatch(diffPatch) {
         return;
     }
     try {
-        await (0, unifiedDiff_1.applyUnifiedDiffToWorkspace)((0, unifiedDiff_1.normalizeUnifiedDiffText)(diffPatch));
+        const structuredPatch = (0, unifiedDiff_1.parseStructuredPatchText)((0, unifiedDiff_1.normalizeStructuredPatchText)(diffPatch));
+        if (structuredPatch.blocks.length > 0) {
+            await (0, unifiedDiff_1.applyStructuredPatchToWorkspace)(diffPatch);
+        }
+        else {
+            await (0, unifiedDiff_1.applyUnifiedDiffToWorkspace)((0, unifiedDiff_1.normalizeUnifiedDiffText)(diffPatch));
+        }
         vscode.window.showInformationMessage('BeliefGuard applied the proposed patch to the workspace.');
     }
     catch (error) {

@@ -7,6 +7,14 @@
 
 import type { Belief, ValidationResult } from '../types';
 
+type StructuredPatchAction = 'add' | 'update' | 'delete';
+
+interface StructuredPatchChange {
+    action: StructuredPatchAction;
+    path: string;
+    body: string;
+}
+
 // ── Negation pairs for heuristic constraint-violation detection ──────
 
 const CONSTRAINT_NEGATION_PAIRS: Array<[RegExp, RegExp]> = [
@@ -37,6 +45,79 @@ function extractModifiedFiles(diffString: string): string[] {
     }
 
     return Array.from(files);
+}
+
+function stripCodeFences(text: string): string {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith('```')) {
+        return text;
+    }
+
+    return trimmed
+        .replace(/^```[a-zA-Z0-9_-]*\r?\n/, '')
+        .replace(/\r?\n```$/, '');
+}
+
+function normalizeStructuredBody(lines: string[]): string {
+    const nonEmptyLines = lines.filter((line) => line.trim().length > 0);
+    if (nonEmptyLines.length > 0 && nonEmptyLines.every((line) => /^[+\- ]/.test(line))) {
+        return lines
+            .map((line) => (line.startsWith('+') || line.startsWith('-') || line.startsWith(' ')
+                ? line.slice(1)
+                : line))
+            .join('\n');
+    }
+
+    return lines.join('\n');
+}
+
+function parseStructuredPatch(diffString: string): StructuredPatchChange[] {
+    const lines = stripCodeFences(diffString).split(/\r?\n/);
+    const changes: StructuredPatchChange[] = [];
+    let current: StructuredPatchChange | null = null;
+    let bodyLines: string[] = [];
+
+    const flush = (): void => {
+        if (!current) {
+            return;
+        }
+
+        changes.push({
+            ...current,
+            body: current.action === 'delete' ? '' : normalizeStructuredBody(bodyLines),
+        });
+    };
+
+    for (const line of lines) {
+        if (/^\*\*\*\s+(Begin Patch|End Patch)\s*$/.test(line)) {
+            continue;
+        }
+
+        const match = line.match(/^\*\*\*\s+(Add File|Update File|Delete File):\s*(.+)$/);
+        if (match) {
+            flush();
+
+            current = {
+                action: match[1] === 'Add File'
+                    ? 'add'
+                    : match[1] === 'Update File'
+                        ? 'update'
+                        : 'delete',
+                path: match[2].trim(),
+                body: '',
+            };
+            bodyLines = [];
+            continue;
+        }
+
+        if (current) {
+            bodyLines.push(line);
+        }
+    }
+
+    flush();
+
+    return changes.filter((change) => change.path.length > 0);
 }
 
 /**
@@ -80,8 +161,14 @@ export function validateGeneratedPatch(
     validatedBeliefs: Belief[]
 ): ValidationResult {
     const violations: Belief[] = [];
-    const modifiedFiles = extractModifiedFiles(diffString);
-    const diffLower = diffString.toLowerCase();
+    const structuredChanges = parseStructuredPatch(diffString);
+    const modifiedFiles = structuredChanges.length > 0
+        ? Array.from(new Set(structuredChanges.map((change) => change.path).filter(Boolean)))
+        : extractModifiedFiles(diffString);
+    const validationText = structuredChanges.length > 0
+        ? structuredChanges.map((change) => [change.path, change.body].filter(Boolean).join('\n')).join('\n') || diffString
+        : diffString;
+    const diffLower = validationText.toLowerCase();
 
     // Only evaluate USER_CONSTRAINT beliefs for violations
     const constraints = validatedBeliefs.filter(
@@ -94,7 +181,7 @@ export function validateGeneratedPatch(
 
         // ── Check 1: File-path overlap ──────────────────────────────────
         // If the constraint mentions specific file-like tokens (containing
-        // dots or slashes), check whether the diff touches those files.
+        // dots or slashes), check whether the patch touches those files.
         const fileTokens = keywords.filter(
             (k) => k.includes('.') || k.includes('/')
         );
@@ -113,8 +200,8 @@ export function validateGeneratedPatch(
         if (!isViolated) {
             for (const [protectivePattern, actionPattern] of CONSTRAINT_NEGATION_PAIRS) {
                 if (protectivePattern.test(constraint.statement)) {
-                    // The constraint is protective; check if the diff performs the action
-                    if (actionPattern.test(diffString)) {
+                    // The constraint is protective; check if the patch performs the action.
+                    if (actionPattern.test(validationText)) {
                         // Additional check: make sure the action relates to
                         // the same domain as the constraint (keyword overlap)
                         const domainOverlap = keywords.some(
