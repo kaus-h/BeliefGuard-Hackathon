@@ -53,6 +53,7 @@ async function showDiff(diffPatch) {
     const normalizedDiff = (0, unifiedDiff_1.normalizeUnifiedDiffText)(diffPatch);
     const parsedChanges = (0, unifiedDiff_1.parseUnifiedDiff)(normalizedDiff);
     const activeEditor = vscode.window.activeTextEditor;
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (parsedChanges.length === 0) {
         throw new Error('No file changes were found in the proposed patch.');
     }
@@ -61,7 +62,7 @@ async function showDiff(diffPatch) {
         : undefined;
     if (parsedChanges.length > 1) {
         const quickPickItems = parsedChanges.map((change) => {
-            const path = change.newPath ?? change.oldPath ?? 'unknown';
+            const path = (0, unifiedDiff_1.getUnifiedDiffChangePath)(change, workspaceFolder);
             return {
                 label: path,
                 description: change.oldPath === null
@@ -71,30 +72,37 @@ async function showDiff(diffPatch) {
                         : 'Modified file',
             };
         });
-        const hasActiveMatch = selectedRelativePath
-            ? parsedChanges.some((change) => (0, unifiedDiff_1.findMatchingDiffChange)([change], selectedRelativePath || ''))
-            : false;
-        if (!hasActiveMatch) {
-            const picked = await vscode.window.showQuickPick(quickPickItems, {
-                placeHolder: 'Select a file from the workspace patch to review',
-            });
-            if (!picked) {
-                return;
-            }
-            selectedRelativePath = picked.label;
+        const picked = await vscode.window.showQuickPick(quickPickItems, {
+            placeHolder: selectedRelativePath
+                ? `Select a file from the workspace patch to review (active file: ${selectedRelativePath})`
+                : 'Select a file from the workspace patch to review',
+        });
+        if (!picked) {
+            return;
         }
+        selectedRelativePath = picked.label;
+    }
+    else {
+        selectedRelativePath =
+            parsedChanges[0].newPath ??
+                parsedChanges[0].oldPath ??
+                selectedRelativePath;
     }
     // Determine original content.
     let originalUri;
     let originalContent;
     let proposedContent;
     let displayFileName = 'workspace-change';
+    let displayFilePath = 'workspace-change';
     if (selectedRelativePath) {
-        const matchingChange = (0, unifiedDiff_1.findMatchingDiffChange)(parsedChanges, selectedRelativePath);
+        const matchingChange = (0, unifiedDiff_1.findMatchingDiffChange)(parsedChanges, selectedRelativePath, workspaceFolder);
         if (matchingChange) {
-            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-            const targetPath = matchingChange.newPath ?? matchingChange.oldPath;
+            const rawTargetPath = matchingChange.newPath ?? matchingChange.oldPath;
+            const targetPath = workspaceFolder
+                ? (0, unifiedDiff_1.resolveWorkspaceRelativePath)(workspaceFolder, rawTargetPath)
+                : rawTargetPath;
             displayFileName = targetPath?.split(/[\\/]/).pop() || targetPath || 'workspace-change';
+            displayFilePath = targetPath || rawTargetPath || displayFileName;
             if (workspaceFolder && targetPath) {
                 originalUri = vscode.Uri.joinPath(workspaceFolder.uri, targetPath);
                 if (matchingChange.oldPath === null) {
@@ -154,10 +162,10 @@ async function showDiff(diffPatch) {
     const sub2 = vscode.workspace.registerTextDocumentContentProvider(patchedScheme, patchedProvider);
     // Build virtual URIs.
     const fileName = displayFileName;
-    const leftUri = vscode.Uri.parse(`${originalScheme}:${fileName}?ts=${Date.now()}`);
-    const rightUri = vscode.Uri.parse(`${patchedScheme}:${fileName}?ts=${Date.now()}`);
+    const leftUri = vscode.Uri.parse(`${originalScheme}:${encodeURIComponent(fileName)}?ts=${Date.now()}`);
+    const rightUri = vscode.Uri.parse(`${patchedScheme}:${encodeURIComponent(fileName)}?ts=${Date.now()}`);
     // Open the native diff editor.
-    await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, `BeliefGuard: ${fileName} (Current ↔ Proposed)`);
+    await vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, `BeliefGuard: ${displayFilePath} (Current ↔ Proposed)`);
     // Dispose providers after a short delay to let VS Code read the content.
     setTimeout(() => {
         sub1.dispose();

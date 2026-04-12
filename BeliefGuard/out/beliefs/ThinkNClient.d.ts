@@ -26,6 +26,13 @@
  * @see https://www.thinkn.ai/dev/start/hack-guide — Hackathon integration guide
  */
 import type { Belief, Evidence } from './types';
+type ThinkNDiagnosticLevel = 'info' | 'success' | 'warning' | 'error';
+interface ThinkNDiagnosticEvent {
+    title: string;
+    detail?: string;
+    level: ThinkNDiagnosticLevel;
+    data?: unknown;
+}
 export declare class BeliefStateManager {
     /**
      * LOCAL LAYER: SessionStore singleton for synchronous access.
@@ -37,9 +44,15 @@ export declare class BeliefStateManager {
      * Provides cloud persistence, clarity scoring, and audit trails.
      */
     private thinkN;
-    /** Whether the thinkN SDK is available (valid key + reachable). */
-    private thinkNAvailable;
+    private readonly apiKey;
+    private readonly agentId;
+    private readonly namespace;
+    private currentThreadId;
+    private diagnosticReporter?;
     constructor();
+    beginTask(threadId: string): void;
+    setDiagnosticReporter(reporter: ((event: ThinkNDiagnosticEvent) => void) | undefined): void;
+    ensureReady(): void;
     /**
      * Register a newly extracted assumption into the belief state.
      *
@@ -49,12 +62,12 @@ export declare class BeliefStateManager {
      * @param belief  The belief to register. `id` is optional — if
      *                omitted a new UUID v4 is generated.
      */
-    addBelief(belief: Belief): void;
+    addBelief(belief: Belief): Promise<void>;
     /**
      * Bulk-register an array of beliefs — convenience helper used when
      * the LLM plan extractor returns many assumptions at once.
      */
-    addBeliefs(beliefs: Belief[]): void;
+    addBeliefs(beliefs: Belief[]): Promise<void>;
     /**
      * Locate an existing belief, append new evidence, recalculate the
      * confidence score, and auto-validate when the threshold is met.
@@ -65,7 +78,7 @@ export declare class BeliefStateManager {
      *
      * @throws {Error}       If no belief with the given `id` exists.
      */
-    updateBeliefConfidence(id: string, newConfidence: number, newEvidence: Evidence): void;
+    updateBeliefConfidence(id: string, newConfidence: number, newEvidence: Evidence): Promise<void>;
     /**
      * Mark a belief as contradicted by another belief.
      *
@@ -84,7 +97,7 @@ export declare class BeliefStateManager {
     /** Return all evidence in the current session. */
     getAllEvidence(): Evidence[];
     /** Clear the entire belief state (e.g., new task cycle). */
-    reset(): void;
+    reset(): Promise<void>;
     /**
      * Read the thinkN world state for clarity scoring and contradiction info.
      * Used by the Orchestrator to enrich gate decisions with cloud intelligence.
@@ -139,11 +152,10 @@ export declare class BeliefStateManager {
      * Prevent remote thinkN calls from hanging the full extension pipeline.
      */
     private withTimeout;
-    /**
-     * Handle thinkN errors gracefully. On auth errors, disable thinkN
-     * for the remainder of the session to avoid repeated failures.
-     */
-    private handleThinkNError;
+    private createClient;
+    private getScopeMetadata;
+    private reportDiagnostic;
+    private wrapThinkNError;
     /**
      * Map BeliefGuard's internal type taxonomy to thinkN's belief types.
      *
@@ -152,4 +164,5 @@ export declare class BeliefStateManager {
      */
     private mapBeliefTypeToThinkN;
 }
+export {};
 //# sourceMappingURL=ThinkNClient.d.ts.map

@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
-import { AgentPlan, Belief } from '../types';
+import { AgentPlan, Belief, PatchGenerationResult } from '../types';
 import { getExtractorPrompt } from '../prompts/Extractor';
 import { getPatchGeneratorPrompt } from '../prompts/PatchGenerator';
 
@@ -23,6 +23,11 @@ const AgentPlanSchema = z.object({
     intentDescription: z.string().describe("A description of the intended execution plan"),
     targetFiles: z.array(z.string()).describe("Paths of files to be created or modified"),
     extractedBeliefs: z.array(BeliefSchema).describe("All assumptions and beliefs extracted")
+});
+
+const PatchGenerationResultSchema = z.object({
+    assistantMessage: z.string().min(1).describe('A concise user-facing explanation for the chat UI'),
+    diffPatch: z.string().describe('A raw unified diff containing only repository file edits, or an empty string when no actionable patch should be produced')
 });
 
 export class LLMClient {
@@ -137,17 +142,32 @@ export class LLMClient {
     /**
      * Once the Confidence Gate yields PROCEED, this method generates the final patch.
      */
-    public async generateCodePatch(task: string, plan: AgentPlan, validatedBeliefs: Belief[]): Promise<string> {
+    public async generateCodePatch(task: string, plan: AgentPlan, validatedBeliefs: Belief[]): Promise<PatchGenerationResult> {
         const systemPrompt = getPatchGeneratorPrompt(task, validatedBeliefs, plan);
 
         try {
-            return await this.withRetries(
-                () => this.callOpenRouter(systemPrompt, { jsonMode: false }),
+            const text = await this.withRetries(
+                () => this.callOpenRouter(systemPrompt, { jsonMode: true }),
                 2
             );
+            return sanitizePatchGenerationResult(
+                PatchGenerationResultSchema.parse(extractJsonObject(text))
+            );
         } catch (error: any) {
-            console.error('[BeliefGuard AI] Failed to generate code patch:', error);
-            throw new Error(`LLM Patch Generation Error: ${error?.message || 'Unknown error'}`);
+            console.warn('[BeliefGuard AI] Structured patch generation failed, trying JSON text fallback:', error);
+
+            try {
+                const text = await this.withRetries(
+                    () => this.callOpenRouter(systemPrompt, { jsonMode: false }),
+                    2
+                );
+                return sanitizePatchGenerationResult(
+                    PatchGenerationResultSchema.parse(extractJsonObject(text))
+                );
+            } catch (fallbackError: any) {
+                console.error('[BeliefGuard AI] Failed to generate code patch:', fallbackError);
+                throw new Error(`LLM Patch Generation Error: ${fallbackError?.message || error?.message || 'Unknown error'}`);
+            }
         }
     }
 
@@ -282,6 +302,15 @@ function sanitizeBelief(belief: z.infer<typeof BeliefSchema>): Belief {
         evidenceIds: Array.isArray(belief.evidenceIds) ? belief.evidenceIds : [],
         isValidated: isRepositoryFact ? Boolean(belief.isValidated && confidenceScore >= 0.85) : false,
         contradictions: Array.isArray(belief.contradictions) ? belief.contradictions : [],
+    };
+}
+
+function sanitizePatchGenerationResult(
+    result: z.infer<typeof PatchGenerationResultSchema>
+): PatchGenerationResult {
+    return {
+        assistantMessage: result.assistantMessage.trim(),
+        diffPatch: result.diffPatch.trim(),
     };
 }
 

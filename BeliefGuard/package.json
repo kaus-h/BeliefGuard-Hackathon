@@ -10,11 +10,6 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [
-    "onView:beliefguard.sidebarView",
-    "onCommand:beliefguard.startGuardedTask",
-    "onCommand:beliefguard.showDiff"
-  ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
@@ -41,7 +36,8 @@
         {
           "type": "webview",
           "id": "beliefguard.sidebarView",
-          "name": "BeliefGuard"
+          "name": "BeliefGuard",
+          "icon": "$(shield)"
         }
       ]
     }

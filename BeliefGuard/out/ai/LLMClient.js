@@ -23,6 +23,10 @@ const AgentPlanSchema = zod_1.z.object({
     targetFiles: zod_1.z.array(zod_1.z.string()).describe("Paths of files to be created or modified"),
     extractedBeliefs: zod_1.z.array(BeliefSchema).describe("All assumptions and beliefs extracted")
 });
+const PatchGenerationResultSchema = zod_1.z.object({
+    assistantMessage: zod_1.z.string().min(1).describe('A concise user-facing explanation for the chat UI'),
+    diffPatch: zod_1.z.string().describe('A raw unified diff containing only repository file edits, or an empty string when no actionable patch should be produced')
+});
 class LLMClient {
     apiKey;
     modelName;
@@ -95,14 +99,14 @@ class LLMClient {
         }, null, 2)}`;
         try {
             const text = await this.withRetries(() => this.callOpenRouter(extractionPrompt, { jsonMode: true }), 2);
-            return sanitizeAgentPlan(AgentPlanSchema.parse(extractJsonObject(text)));
+            return tunePlanForGate(sanitizeAgentPlan(AgentPlanSchema.parse(extractJsonObject(text))), task);
         }
         catch (error) {
             console.warn('[BeliefGuard AI] Structured extraction failed, trying JSON text fallback:', error);
             try {
                 const text = await this.withRetries(() => this.callOpenRouter(extractionPrompt, { jsonMode: false }), 2);
                 const parsed = AgentPlanSchema.parse(extractJsonObject(text));
-                return sanitizeAgentPlan(parsed);
+                return tunePlanForGate(sanitizeAgentPlan(parsed), task);
             }
             catch (fallbackError) {
                 console.error('[BeliefGuard AI] Failed to generate plan and extract beliefs:', fallbackError);
@@ -116,11 +120,19 @@ class LLMClient {
     async generateCodePatch(task, plan, validatedBeliefs) {
         const systemPrompt = (0, PatchGenerator_1.getPatchGeneratorPrompt)(task, validatedBeliefs, plan);
         try {
-            return await this.withRetries(() => this.callOpenRouter(systemPrompt, { jsonMode: false }), 2);
+            const text = await this.withRetries(() => this.callOpenRouter(systemPrompt, { jsonMode: true }), 2);
+            return sanitizePatchGenerationResult(PatchGenerationResultSchema.parse(extractJsonObject(text)));
         }
         catch (error) {
-            console.error('[BeliefGuard AI] Failed to generate code patch:', error);
-            throw new Error(`LLM Patch Generation Error: ${error?.message || 'Unknown error'}`);
+            console.warn('[BeliefGuard AI] Structured patch generation failed, trying JSON text fallback:', error);
+            try {
+                const text = await this.withRetries(() => this.callOpenRouter(systemPrompt, { jsonMode: false }), 2);
+                return sanitizePatchGenerationResult(PatchGenerationResultSchema.parse(extractJsonObject(text)));
+            }
+            catch (fallbackError) {
+                console.error('[BeliefGuard AI] Failed to generate code patch:', fallbackError);
+                throw new Error(`LLM Patch Generation Error: ${fallbackError?.message || error?.message || 'Unknown error'}`);
+            }
         }
     }
     async callOpenRouter(prompt, options) {
@@ -217,15 +229,64 @@ function sanitizeAgentPlan(plan) {
     };
 }
 function sanitizeBelief(belief) {
+    const confidenceScore = Math.max(0, Math.min(1, belief.confidenceScore));
+    const isRepositoryFact = belief.type === 'REPO_FACT';
     return {
         id: isUuid(belief.id) ? belief.id : (0, crypto_1.randomUUID)(),
         statement: belief.statement,
         type: belief.type,
-        confidenceScore: Math.max(0, Math.min(1, belief.confidenceScore)),
+        confidenceScore,
         riskLevel: belief.riskLevel,
         evidenceIds: Array.isArray(belief.evidenceIds) ? belief.evidenceIds : [],
-        isValidated: Boolean(belief.isValidated),
+        isValidated: isRepositoryFact ? Boolean(belief.isValidated && confidenceScore >= 0.85) : false,
         contradictions: Array.isArray(belief.contradictions) ? belief.contradictions : [],
+    };
+}
+function sanitizePatchGenerationResult(result) {
+    return {
+        assistantMessage: result.assistantMessage.trim(),
+        diffPatch: result.diffPatch.trim(),
+    };
+}
+function tunePlanForGate(plan, task) {
+    const tunedBeliefs = plan.extractedBeliefs.map((belief) => tuneBeliefForGate(belief));
+    const assumptionIndexes = tunedBeliefs
+        .map((belief, index) => ({ belief, index }))
+        .filter(({ belief }) => belief.type === 'AGENT_ASSUMPTION');
+    const taskLooksHighImpact = /auth|authori|database|schema|migration|config|environment|env|route|router|api|permission|deploy|infra|security|workspace|multi[- ]file|multiple files?/i.test(task) ||
+        plan.targetFiles.length > 1;
+    if (taskLooksHighImpact &&
+        assumptionIndexes.length > 0 &&
+        !assumptionIndexes.some(({ belief }) => belief.riskLevel === 'HIGH')) {
+        const lowestConfidence = [...assumptionIndexes].sort((left, right) => left.belief.confidenceScore - right.belief.confidenceScore)[0];
+        tunedBeliefs[lowestConfidence.index] = {
+            ...lowestConfidence.belief,
+            riskLevel: 'HIGH',
+        };
+    }
+    return {
+        ...plan,
+        extractedBeliefs: tunedBeliefs,
+    };
+}
+function tuneBeliefForGate(belief) {
+    const highImpactPattern = /auth|authori|database|schema|migration|config|environment|env|route|router|api|permission|deploy|infra|security|payment|token|session/i;
+    let riskLevel = belief.riskLevel;
+    if (belief.type === 'AGENT_ASSUMPTION') {
+        if (highImpactPattern.test(belief.statement)) {
+            riskLevel = 'HIGH';
+        }
+        else if (belief.confidenceScore < 0.75 && riskLevel === 'LOW') {
+            riskLevel = 'MEDIUM';
+        }
+    }
+    if (belief.type === 'TASK_BELIEF' && belief.confidenceScore < 0.6 && riskLevel === 'LOW') {
+        riskLevel = 'MEDIUM';
+    }
+    return {
+        ...belief,
+        riskLevel,
+        isValidated: belief.type === 'REPO_FACT' ? belief.isValidated : false,
     };
 }
 function isUuid(value) {

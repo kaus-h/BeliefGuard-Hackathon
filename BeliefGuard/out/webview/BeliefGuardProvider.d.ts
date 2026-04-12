@@ -15,6 +15,7 @@ export declare class BeliefGuardProvider implements vscode.WebviewViewProvider {
     constructor(_extensionUri: vscode.Uri);
     resolveWebviewView(webviewView: vscode.WebviewView, _context: vscode.WebviewViewResolveContext, _token: vscode.CancellationToken): void;
     postProcessing(message: string): void;
+    postAssistantMessage(title: string, message: string): void;
     postAuditEvent(event: AuditEvent): void;
     postBeliefs(beliefs: Belief[], questions: ClarificationQuestion[]): void;
     postBeliefGraph(beliefs: Belief[]): void;

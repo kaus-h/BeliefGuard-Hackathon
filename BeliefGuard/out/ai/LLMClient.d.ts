@@ -1,4 +1,4 @@
-import { AgentPlan, Belief } from '../types';
+import { AgentPlan, Belief, PatchGenerationResult } from '../types';
 export declare class LLMClient {
     private readonly apiKey;
     private readonly modelName;
@@ -16,7 +16,7 @@ export declare class LLMClient {
     /**
      * Once the Confidence Gate yields PROCEED, this method generates the final patch.
      */
-    generateCodePatch(task: string, plan: AgentPlan, validatedBeliefs: Belief[]): Promise<string>;
+    generateCodePatch(task: string, plan: AgentPlan, validatedBeliefs: Belief[]): Promise<PatchGenerationResult>;
     private callOpenRouter;
 }
 //# sourceMappingURL=LLMClient.d.ts.map

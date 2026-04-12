@@ -18,8 +18,42 @@
 // 10.  Post-patch validation
 // 11.  If valid → dispatch diff to Webview/VS Code Diff API
 // ──────────────────────────────────────────────────────────────────────
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MainOrchestrator = void 0;
+const vscode = __importStar(require("vscode"));
 const uuid_1 = require("uuid");
 // ── Agent 2: Context & Evidence ─────────────────────────────────────
 const WorkspaceScanner_1 = require("../context/WorkspaceScanner");
@@ -55,6 +89,9 @@ class MainOrchestrator {
         this.provider = provider;
         this.llmClient = new LLMClient_1.LLMClient();
         this.beliefManager = new ThinkNClient_1.BeliefStateManager();
+        this.beliefManager.setDiagnosticReporter((event) => {
+            this.audit('thinkn', event.title, event.detail, event.level, event.data);
+        });
     }
     /**
      * Executes the full 11-step guarded task pipeline.
@@ -67,18 +104,22 @@ class MainOrchestrator {
      */
     async runGuardedTask(userTask) {
         try {
+            const taskThreadId = (0, uuid_1.v4)();
+            this.beliefManager.beginTask(taskThreadId);
             // Reset state for a fresh task cycle
-            this.beliefManager.reset();
+            await this.beliefManager.reset();
             this.audit('session', 'Started guarded task', userTask, 'info', {
                 task: userTask,
+                thinkNThreadId: taskThreadId,
             });
+            const beliefContext = await this.beliefManager.getBeliefContext(userTask);
+            this.audit('beliefs', 'thinkN readiness check passed', 'Thread-scoped thinkN context initialized successfully for this guarded task.', 'success', { thinkNThreadId: taskThreadId });
             // ── Step 1: Context Collection (Agent 2) ────────────────
             this.provider.postProcessing('Scanning workspace and collecting context…');
             const repoContext = await (0, WorkspaceScanner_1.gatherInitialContext)();
             this.audit('context', 'Workspace context collected', `Collected ${repoContext.length} characters of repository context.`, 'success');
             // Enrich the LLM context with thinkN's accumulated belief state
             // from prior sessions (via beliefs.before())
-            const beliefContext = await this.beliefManager.getBeliefContext(userTask);
             const enrichedContext = beliefContext
                 ? `${repoContext}\n\n--- Prior Belief Context ---\n${beliefContext}`
                 : repoContext;
@@ -93,7 +134,7 @@ class MainOrchestrator {
             });
             // ── Step 3: Push beliefs → thinkN State (Agent 3) ───────
             this.provider.postProcessing('Registering beliefs in the Repo Belief Graph…');
-            this.beliefManager.addBeliefs(agentPlan.extractedBeliefs);
+            await this.beliefManager.addBeliefs(agentPlan.extractedBeliefs);
             this.pushBeliefGraphSnapshot();
             this.audit('beliefs', 'Beliefs registered in local state', `Session store now tracks ${this.beliefManager.getAllBeliefs().length} beliefs.`, 'success', this.summarizeBeliefs(this.beliefManager.getAllBeliefs()));
             // Feed the LLM output to thinkN for cloud-side extraction & fusion
@@ -110,7 +151,47 @@ class MainOrchestrator {
             // ── Step 9: Patch Generation (Agent 4) ──────────────────
             this.provider.postProcessing('Generating code patch with validated beliefs…');
             const allBeliefs = this.beliefManager.getAllBeliefs();
-            const diffPatch = await this.llmClient.generateCodePatch(userTask, agentPlan, allBeliefs);
+            const patchResult = await this.llmClient.generateCodePatch(userTask, agentPlan, allBeliefs);
+            const diffPatch = (0, unifiedDiff_1.normalizeUnifiedDiffText)(patchResult.diffPatch);
+            if (!diffPatch.trim()) {
+                this.provider.postAssistantMessage('BeliefGuard', patchResult.assistantMessage || 'BeliefGuard needs a concrete coding task before it can produce workspace edits.');
+                this.audit('patch', 'No actionable patch produced', 'The model returned no workspace diff for this task. This usually means the request was conversational or did not map to a concrete repository edit.', 'warning', {
+                    targetFiles: agentPlan.targetFiles,
+                    assistantMessage: patchResult.assistantMessage,
+                });
+                this.provider.postError('No actionable workspace patch was produced. Please provide a concrete coding task tied to repository files.');
+                return;
+            }
+            const parsedPatchChanges = (0, unifiedDiff_1.parseUnifiedDiff)(diffPatch);
+            if (parsedPatchChanges.length === 0) {
+                this.provider.postAssistantMessage('BeliefGuard', patchResult.assistantMessage || 'BeliefGuard could not turn this request into a valid workspace diff.');
+                this.audit('patch', 'Patch generation returned invalid diff content', 'The model produced output, but it did not contain a valid unified diff.', 'error', {
+                    targetFiles: agentPlan.targetFiles,
+                    diffPreview: diffPatch.split(/\r?\n/).slice(0, 40).join('\n'),
+                });
+                this.provider.postError('BeliefGuard did not receive a valid workspace diff from the model. Please refine the task and try again.');
+                return;
+            }
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            const unresolvedPatchPaths = parsedPatchChanges.filter((change) => {
+                const resolvedPath = (0, unifiedDiff_1.getUnifiedDiffChangePath)(change, workspaceFolder);
+                return !resolvedPath || resolvedPath === 'unknown';
+            });
+            this.audit('patch', 'Patch target resolution summary', `Resolved ${parsedPatchChanges.length - unresolvedPatchPaths.length}/${parsedPatchChanges.length} patch target(s) to workspace-relative files.`, unresolvedPatchPaths.length > 0 ? 'warning' : 'info', parsedPatchChanges.map((change) => ({
+                rawOldPath: change.oldPath,
+                rawNewPath: change.newPath,
+                resolvedPath: (0, unifiedDiff_1.getUnifiedDiffChangePath)(change, workspaceFolder),
+            })));
+            if (unresolvedPatchPaths.length > 0) {
+                this.provider.postAssistantMessage('BeliefGuard', patchResult.assistantMessage || 'BeliefGuard generated a patch proposal, but some file targets did not map cleanly into the workspace.');
+                this.audit('patch', 'Patch blocked due to unresolved targets', 'The generated patch referenced one or more unresolved or non-workspace file targets.', 'error', unresolvedPatchPaths.map((change) => ({
+                    rawOldPath: change.oldPath,
+                    rawNewPath: change.newPath,
+                    resolvedPath: (0, unifiedDiff_1.getUnifiedDiffChangePath)(change, workspaceFolder),
+                })));
+                this.provider.postError('BeliefGuard blocked the patch because one or more generated file targets did not resolve to real workspace-relative paths.');
+                return;
+            }
             this.audit('patch', 'Patch generated', `Generated unified diff with ${diffPatch.split(/\r?\n/).length} lines for ${agentPlan.targetFiles.length} target files.`, 'success', {
                 targetFiles: agentPlan.targetFiles,
                 diffPreview: diffPatch.split(/\r?\n/).slice(0, 40).join('\n'),
@@ -121,6 +202,7 @@ class MainOrchestrator {
             const patchSummary = (0, unifiedDiff_1.summarizeUnifiedDiff)(diffPatch);
             // ── Step 11: Dispatch to Webview (Agent 1) ──────────────
             if (validationResult.isValid) {
+                this.provider.postAssistantMessage('BeliefGuard', patchResult.assistantMessage);
                 this.audit('validation', 'Patch validation passed', 'Patch satisfied the current validated constraints.', 'success');
                 this.pushBeliefGraphSnapshot();
                 this.provider.postPatchReady(diffPatch, patchSummary);
@@ -176,7 +258,7 @@ class MainOrchestrator {
                     const newConfidence = Math.min(1.0, belief.confidenceScore * 0.4 + avgWeight * 0.6);
                     // Update through state manager (handles threshold auto-validation)
                     for (const ev of evidence) {
-                        this.beliefManager.updateBeliefConfidence(belief.id, newConfidence, ev);
+                        await this.beliefManager.updateBeliefConfidence(belief.id, newConfidence, ev);
                     }
                 }
             }
@@ -262,7 +344,7 @@ class MainOrchestrator {
                         this.provider.postProcessing('Re-grounding exhausted. Escalating remaining uncertainties…');
                         const lowConfBeliefs = allBeliefs.filter((b) => b.confidenceScore < 0.40 && !b.isValidated);
                         for (const b of lowConfBeliefs) {
-                            this.beliefManager.addBelief({
+                            await this.beliefManager.addBelief({
                                 ...b,
                                 riskLevel: 'HIGH',
                             });
@@ -306,7 +388,7 @@ class MainOrchestrator {
                                 snippet: `User confirmed: "${existingBelief.statement}"`,
                                 weight: 1.0,
                             };
-                            this.beliefManager.updateBeliefConfidence(answer.beliefId, 1.0, confirmedEvidence);
+                            await this.beliefManager.updateBeliefConfidence(answer.beliefId, 1.0, confirmedEvidence);
                             this.audit('questions', 'User confirmed belief', existingBelief.statement, 'success', {
                                 beliefId: existingBelief.id,
                                 answer: answer.answer,
@@ -324,7 +406,7 @@ class MainOrchestrator {
                                 isValidated: true,
                                 contradictions: [],
                             };
-                            this.beliefManager.addBelief(rejectionBelief);
+                            await this.beliefManager.addBelief(rejectionBelief);
                             this.beliefManager.markContradiction(answer.beliefId, rejectionBelief.id);
                             this.audit('questions', 'User rejected belief', existingBelief.statement, 'warning', {
                                 beliefId: existingBelief.id,

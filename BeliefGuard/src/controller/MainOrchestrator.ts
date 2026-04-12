@@ -18,6 +18,7 @@
 // 11.  If valid → dispatch diff to Webview/VS Code Diff API
 // ──────────────────────────────────────────────────────────────────────
 
+import * as vscode from 'vscode';
 import { v4 as uuidv4 } from 'uuid';
 import type { AuditLevel, AuditPhase, Belief, Evidence } from '../types';
 
@@ -39,7 +40,7 @@ import { LLMClient } from '../ai/LLMClient';
 import { evaluateState, getBlockingContradictions } from '../gate/ConfidenceGate';
 import { generateQuestions } from '../gate/QuestionGenerator';
 import { validateGeneratedPatch } from '../validation/PatchValidator';
-import { summarizeUnifiedDiff } from '../utils/unifiedDiff';
+import { getUnifiedDiffChangePath, normalizeUnifiedDiffText, parseUnifiedDiff, summarizeUnifiedDiff } from '../utils/unifiedDiff';
 
 // ── Constants ───────────────────────────────────────────────────────
 /** Maximum number of INSPECT_MORE re-grounding cycles before forcing ASK_USER. */
@@ -65,6 +66,9 @@ export class MainOrchestrator {
         this.provider = provider;
         this.llmClient = new LLMClient();
         this.beliefManager = new BeliefStateManager();
+        this.beliefManager.setDiagnosticReporter((event) => {
+            this.audit('thinkn', event.title, event.detail, event.level, event.data);
+        });
     }
 
     /**
@@ -78,11 +82,24 @@ export class MainOrchestrator {
      */
     public async runGuardedTask(userTask: string): Promise<void> {
         try {
+            const taskThreadId = uuidv4();
+            this.beliefManager.beginTask(taskThreadId);
+
             // Reset state for a fresh task cycle
-            this.beliefManager.reset();
+            await this.beliefManager.reset();
             this.audit('session', 'Started guarded task', userTask, 'info', {
                 task: userTask,
+                thinkNThreadId: taskThreadId,
             });
+
+            const beliefContext = await this.beliefManager.getBeliefContext(userTask);
+            this.audit(
+                'beliefs',
+                'thinkN readiness check passed',
+                'Thread-scoped thinkN context initialized successfully for this guarded task.',
+                'success',
+                { thinkNThreadId: taskThreadId }
+            );
 
             // ── Step 1: Context Collection (Agent 2) ────────────────
             this.provider.postProcessing(
@@ -98,7 +115,6 @@ export class MainOrchestrator {
 
             // Enrich the LLM context with thinkN's accumulated belief state
             // from prior sessions (via beliefs.before())
-            const beliefContext = await this.beliefManager.getBeliefContext(userTask);
             const enrichedContext = beliefContext
                 ? `${repoContext}\n\n--- Prior Belief Context ---\n${beliefContext}`
                 : repoContext;
@@ -128,7 +144,7 @@ export class MainOrchestrator {
             this.provider.postProcessing(
                 'Registering beliefs in the Repo Belief Graph…'
             );
-            this.beliefManager.addBeliefs(agentPlan.extractedBeliefs);
+            await this.beliefManager.addBeliefs(agentPlan.extractedBeliefs);
             this.pushBeliefGraphSnapshot();
             this.audit(
                 'beliefs',
@@ -167,11 +183,95 @@ export class MainOrchestrator {
                 'Generating code patch with validated beliefs…'
             );
             const allBeliefs = this.beliefManager.getAllBeliefs();
-            const diffPatch = await this.llmClient.generateCodePatch(
+            const patchResult = await this.llmClient.generateCodePatch(
                 userTask,
                 agentPlan,
                 allBeliefs
             );
+            const diffPatch = normalizeUnifiedDiffText(patchResult.diffPatch);
+            if (!diffPatch.trim()) {
+                this.provider.postAssistantMessage(
+                    'BeliefGuard',
+                    patchResult.assistantMessage || 'BeliefGuard needs a concrete coding task before it can produce workspace edits.'
+                );
+                this.audit(
+                    'patch',
+                    'No actionable patch produced',
+                    'The model returned no workspace diff for this task. This usually means the request was conversational or did not map to a concrete repository edit.',
+                    'warning',
+                    {
+                        targetFiles: agentPlan.targetFiles,
+                        assistantMessage: patchResult.assistantMessage,
+                    }
+                );
+                this.provider.postError(
+                    'No actionable workspace patch was produced. Please provide a concrete coding task tied to repository files.'
+                );
+                return;
+            }
+
+            const parsedPatchChanges = parseUnifiedDiff(diffPatch);
+            if (parsedPatchChanges.length === 0) {
+                this.provider.postAssistantMessage(
+                    'BeliefGuard',
+                    patchResult.assistantMessage || 'BeliefGuard could not turn this request into a valid workspace diff.'
+                );
+                this.audit(
+                    'patch',
+                    'Patch generation returned invalid diff content',
+                    'The model produced output, but it did not contain a valid unified diff.',
+                    'error',
+                    {
+                        targetFiles: agentPlan.targetFiles,
+                        diffPreview: diffPatch.split(/\r?\n/).slice(0, 40).join('\n'),
+                    }
+                );
+                this.provider.postError(
+                    'BeliefGuard did not receive a valid workspace diff from the model. Please refine the task and try again.'
+                );
+                return;
+            }
+
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            const unresolvedPatchPaths = parsedPatchChanges.filter((change) => {
+                const resolvedPath = getUnifiedDiffChangePath(change, workspaceFolder);
+                return !resolvedPath || resolvedPath === 'unknown';
+            });
+
+            this.audit(
+                'patch',
+                'Patch target resolution summary',
+                `Resolved ${parsedPatchChanges.length - unresolvedPatchPaths.length}/${parsedPatchChanges.length} patch target(s) to workspace-relative files.`,
+                unresolvedPatchPaths.length > 0 ? 'warning' : 'info',
+                parsedPatchChanges.map((change) => ({
+                    rawOldPath: change.oldPath,
+                    rawNewPath: change.newPath,
+                    resolvedPath: getUnifiedDiffChangePath(change, workspaceFolder),
+                }))
+            );
+
+            if (unresolvedPatchPaths.length > 0) {
+                this.provider.postAssistantMessage(
+                    'BeliefGuard',
+                    patchResult.assistantMessage || 'BeliefGuard generated a patch proposal, but some file targets did not map cleanly into the workspace.'
+                );
+                this.audit(
+                    'patch',
+                    'Patch blocked due to unresolved targets',
+                    'The generated patch referenced one or more unresolved or non-workspace file targets.',
+                    'error',
+                    unresolvedPatchPaths.map((change) => ({
+                        rawOldPath: change.oldPath,
+                        rawNewPath: change.newPath,
+                        resolvedPath: getUnifiedDiffChangePath(change, workspaceFolder),
+                    }))
+                );
+                this.provider.postError(
+                    'BeliefGuard blocked the patch because one or more generated file targets did not resolve to real workspace-relative paths.'
+                );
+                return;
+            }
+
             this.audit(
                 'patch',
                 'Patch generated',
@@ -195,6 +295,10 @@ export class MainOrchestrator {
 
             // ── Step 11: Dispatch to Webview (Agent 1) ──────────────
             if (validationResult.isValid) {
+                this.provider.postAssistantMessage(
+                    'BeliefGuard',
+                    patchResult.assistantMessage
+                );
                 this.audit(
                     'validation',
                     'Patch validation passed',
@@ -301,7 +405,7 @@ export class MainOrchestrator {
 
                     // Update through state manager (handles threshold auto-validation)
                     for (const ev of evidence) {
-                        this.beliefManager.updateBeliefConfidence(
+                        await this.beliefManager.updateBeliefConfidence(
                             belief.id,
                             newConfidence,
                             ev
@@ -434,7 +538,7 @@ export class MainOrchestrator {
                             (b) => b.confidenceScore < 0.40 && !b.isValidated
                         );
                         for (const b of lowConfBeliefs) {
-                            this.beliefManager.addBelief({
+                            await this.beliefManager.addBelief({
                                 ...b,
                                 riskLevel: 'HIGH',
                             });
@@ -510,7 +614,7 @@ export class MainOrchestrator {
                                 snippet: `User confirmed: "${existingBelief.statement}"`,
                                 weight: 1.0,
                             };
-                            this.beliefManager.updateBeliefConfidence(
+                            await this.beliefManager.updateBeliefConfidence(
                                 answer.beliefId,
                                 1.0,
                                 confirmedEvidence
@@ -537,7 +641,7 @@ export class MainOrchestrator {
                                 isValidated: true,
                                 contradictions: [],
                             };
-                            this.beliefManager.addBelief(rejectionBelief);
+                            await this.beliefManager.addBelief(rejectionBelief);
                             this.beliefManager.markContradiction(
                                 answer.beliefId,
                                 rejectionBelief.id

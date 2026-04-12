@@ -79,6 +79,11 @@ export interface PatchSummary {
     files: PatchFileSummary[];
 }
 
+export interface PatchGenerationResult {
+    assistantMessage: string;
+    diffPatch: string;
+}
+
 // ── Audit / Diagnostics Types ─────────────────────────────────────────
 
 export type AuditLevel = 'info' | 'success' | 'warning' | 'error';
@@ -88,6 +93,7 @@ export type AuditPhase =
     | 'context'
     | 'extraction'
     | 'beliefs'
+    | 'thinkn'
     | 'grounding'
     | 'gate'
     | 'questions'
@@ -112,13 +118,15 @@ export type WebviewToExtensionMessage =
     | { type: 'TASK_SUBMITTED'; payload: { task: string } }
     | { type: 'USER_ANSWERED'; payload: { beliefId: string; answer: string } }
     | { type: 'REVIEW_DIFF' }
-    | { type: 'APPLY_PATCH' };
+    | { type: 'APPLY_PATCH' }
+    | { type: 'REJECT_PATCH' };
 
 /** Messages flowing FROM the extension host TO the Webview. */
 export type ExtensionToWebviewMessage =
     | { type: 'BELIEFS_EXTRACTED'; payload: { beliefs: Belief[]; questions: ClarificationQuestion[] } }
     | { type: 'BELIEF_GRAPH_UPDATED'; payload: { beliefs: Belief[] } }
     | { type: 'PROCESSING'; payload: { message: string } }
+    | { type: 'ASSISTANT_MESSAGE'; payload: { title: string; message: string } }
     | { type: 'AUDIT_EVENT'; payload: { event: AuditEvent } }
     | { type: 'PATCH_READY'; payload: { diffPatch: string; summary: PatchSummary } }
     | { type: 'BLOCKED'; payload: { reason: string; violations: Belief[] } }

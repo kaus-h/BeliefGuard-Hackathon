@@ -61,8 +61,12 @@ export interface PatchSummary {
     deletions: number;
     files: PatchFileSummary[];
 }
+export interface PatchGenerationResult {
+    assistantMessage: string;
+    diffPatch: string;
+}
 export type AuditLevel = 'info' | 'success' | 'warning' | 'error';
-export type AuditPhase = 'session' | 'context' | 'extraction' | 'beliefs' | 'grounding' | 'gate' | 'questions' | 'patch' | 'validation';
+export type AuditPhase = 'session' | 'context' | 'extraction' | 'beliefs' | 'thinkn' | 'grounding' | 'gate' | 'questions' | 'patch' | 'validation';
 export interface AuditEvent {
     id: string;
     phase: AuditPhase;
@@ -89,6 +93,8 @@ export type WebviewToExtensionMessage = {
     type: 'REVIEW_DIFF';
 } | {
     type: 'APPLY_PATCH';
+} | {
+    type: 'REJECT_PATCH';
 };
 /** Messages flowing FROM the extension host TO the Webview. */
 export type ExtensionToWebviewMessage = {
@@ -105,6 +111,12 @@ export type ExtensionToWebviewMessage = {
 } | {
     type: 'PROCESSING';
     payload: {
+        message: string;
+    };
+} | {
+    type: 'ASSISTANT_MESSAGE';
+    payload: {
+        title: string;
         message: string;
     };
 } | {

@@ -37,6 +37,8 @@ exports.normalizeUnifiedDiffText = normalizeUnifiedDiffText;
 exports.parseUnifiedDiff = parseUnifiedDiff;
 exports.applyUnifiedDiffToText = applyUnifiedDiffToText;
 exports.findMatchingDiffChange = findMatchingDiffChange;
+exports.resolveWorkspaceRelativePath = resolveWorkspaceRelativePath;
+exports.getUnifiedDiffChangePath = getUnifiedDiffChangePath;
 exports.summarizeUnifiedDiff = summarizeUnifiedDiff;
 exports.applyUnifiedDiffToWorkspace = applyUnifiedDiffToWorkspace;
 const vscode = __importStar(require("vscode"));
@@ -131,19 +133,62 @@ function applyUnifiedDiffToText(originalContent, change) {
     }
     return resultLines.join('\n');
 }
-function findMatchingDiffChange(changes, relativePath) {
+function findMatchingDiffChange(changes, relativePath, workspaceFolder) {
     const normalized = relativePath.replace(/\\/g, '/');
     return changes.find((change) => {
-        return (change.newPath === normalized ||
+        const resolvedChangePath = workspaceFolder
+            ? resolveWorkspaceRelativePath(workspaceFolder, change.newPath ?? change.oldPath)
+            : null;
+        return (resolvedChangePath === normalized ||
+            change.newPath === normalized ||
             change.oldPath === normalized ||
             change.newPath?.endsWith(`/${normalized}`) ||
             change.oldPath?.endsWith(`/${normalized}`));
     });
 }
+function resolveWorkspaceRelativePath(workspaceFolder, diffPath) {
+    const normalized = cleanDiffPath(diffPath);
+    if (!normalized) {
+        return null;
+    }
+    const workspacePath = workspaceFolder.uri.fsPath.replace(/\\/g, '/');
+    const workspaceName = workspaceFolder.name.replace(/\\/g, '/');
+    const candidates = new Set();
+    candidates.add(normalized);
+    candidates.add(normalized.replace(/^\/+/, ''));
+    candidates.add(normalized.replace(/^\.\//, ''));
+    if (workspaceName) {
+        candidates.add(normalized.replace(new RegExp(`^${escapeRegExp(workspaceName)}/`), ''));
+    }
+    const normalizedLower = normalized.toLowerCase();
+    const workspaceLower = workspacePath.toLowerCase();
+    if (normalizedLower.startsWith(`${workspaceLower}/`)) {
+        candidates.add(normalized.slice(workspacePath.length + 1));
+    }
+    for (const candidate of candidates) {
+        const cleaned = candidate.replace(/^\/+/, '').replace(/\/+/g, '/');
+        if (!cleaned) {
+            continue;
+        }
+        if (cleaned.startsWith('../') || /^[A-Za-z]:/.test(cleaned)) {
+            continue;
+        }
+        return cleaned;
+    }
+    return null;
+}
+function getUnifiedDiffChangePath(change, workspaceFolder) {
+    const rawPath = change.newPath ?? change.oldPath ?? 'unknown';
+    if (!workspaceFolder) {
+        return rawPath;
+    }
+    return resolveWorkspaceRelativePath(workspaceFolder, rawPath) ?? rawPath;
+}
 function summarizeUnifiedDiff(diffText) {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     const changes = parseUnifiedDiff(diffText);
     const files = changes.map((change) => {
-        const path = change.newPath ?? change.oldPath ?? 'unknown';
+        const path = getUnifiedDiffChangePath(change, workspaceFolder);
         const status = change.oldPath === null
             ? 'ADDED'
             : change.newPath === null
@@ -189,9 +234,10 @@ async function applyUnifiedDiffToWorkspace(diffText) {
     }
     const edit = new vscode.WorkspaceEdit();
     for (const change of changes) {
-        const targetPath = change.newPath ?? change.oldPath;
+        const rawTargetPath = change.newPath ?? change.oldPath;
+        const targetPath = resolveWorkspaceRelativePath(workspaceFolder, rawTargetPath);
         if (!targetPath) {
-            continue;
+            throw new Error(`BeliefGuard could not resolve a workspace file path for diff target: ${rawTargetPath ?? 'unknown file'}.`);
         }
         const targetUri = vscode.Uri.joinPath(workspaceFolder.uri, targetPath);
         if (change.newPath === null) {
@@ -217,8 +263,18 @@ async function applyUnifiedDiffToWorkspace(diffText) {
     await vscode.workspace.saveAll();
 }
 function cleanDiffPath(pathText) {
-    const normalized = pathText.replace(/^([ab])\//, '');
+    if (!pathText) {
+        return null;
+    }
+    const normalized = pathText
+        .trim()
+        .replace(/^['"]|['"]$/g, '')
+        .replace(/^([ab])\//, '')
+        .replace(/\\/g, '/');
     return normalized === '/dev/null' ? null : normalized;
+}
+function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 function splitLinesPreserveTrailingNewline(content) {
     if (!content) {

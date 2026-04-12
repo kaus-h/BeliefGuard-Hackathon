@@ -5,7 +5,7 @@
 // ──────────────────────────────────────────────────────────────────────
 
 import * as vscode from 'vscode';
-import { UnifiedDiffChange, applyUnifiedDiffToText, findMatchingDiffChange, normalizeUnifiedDiffText, parseUnifiedDiff } from '../utils/unifiedDiff';
+import { UnifiedDiffChange, applyUnifiedDiffToText, findMatchingDiffChange, getUnifiedDiffChangePath, normalizeUnifiedDiffText, parseUnifiedDiff, resolveWorkspaceRelativePath } from '../utils/unifiedDiff';
 
 /**
  * Opens a VS Code diff editor showing the proposed patch applied to
@@ -19,6 +19,7 @@ export async function showDiff(diffPatch: string): Promise<void> {
     const normalizedDiff = normalizeUnifiedDiffText(diffPatch);
     const parsedChanges = parseUnifiedDiff(normalizedDiff);
     const activeEditor = vscode.window.activeTextEditor;
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
 
     if (parsedChanges.length === 0) {
         throw new Error('No file changes were found in the proposed patch.');
@@ -30,7 +31,7 @@ export async function showDiff(diffPatch: string): Promise<void> {
 
     if (parsedChanges.length > 1) {
         const quickPickItems: vscode.QuickPickItem[] = parsedChanges.map((change: UnifiedDiffChange) => {
-            const path = change.newPath ?? change.oldPath ?? 'unknown';
+            const path = getUnifiedDiffChangePath(change, workspaceFolder);
             return {
                 label: path,
                 description: change.oldPath === null
@@ -41,19 +42,21 @@ export async function showDiff(diffPatch: string): Promise<void> {
             };
         });
 
-        const hasActiveMatch = selectedRelativePath
-            ? parsedChanges.some((change: UnifiedDiffChange) => findMatchingDiffChange([change], selectedRelativePath || ''))
-            : false;
-
-        if (!hasActiveMatch) {
-            const picked = await vscode.window.showQuickPick<vscode.QuickPickItem>(quickPickItems, {
-                placeHolder: 'Select a file from the workspace patch to review',
-            });
-            if (!picked) {
-                return;
-            }
-            selectedRelativePath = picked.label;
+        const picked = await vscode.window.showQuickPick<vscode.QuickPickItem>(quickPickItems, {
+            placeHolder: selectedRelativePath
+                ? `Select a file from the workspace patch to review (active file: ${selectedRelativePath})`
+                : 'Select a file from the workspace patch to review',
+        });
+        if (!picked) {
+            return;
         }
+
+        selectedRelativePath = picked.label;
+    } else {
+        selectedRelativePath =
+            parsedChanges[0].newPath ??
+            parsedChanges[0].oldPath ??
+            selectedRelativePath;
     }
 
     // Determine original content.
@@ -61,13 +64,17 @@ export async function showDiff(diffPatch: string): Promise<void> {
     let originalContent: string;
     let proposedContent: string;
     let displayFileName = 'workspace-change';
+    let displayFilePath = 'workspace-change';
 
     if (selectedRelativePath) {
-        const matchingChange = findMatchingDiffChange(parsedChanges, selectedRelativePath);
+        const matchingChange = findMatchingDiffChange(parsedChanges, selectedRelativePath, workspaceFolder);
         if (matchingChange) {
-            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-            const targetPath = matchingChange.newPath ?? matchingChange.oldPath;
+            const rawTargetPath = matchingChange.newPath ?? matchingChange.oldPath;
+            const targetPath = workspaceFolder
+                ? resolveWorkspaceRelativePath(workspaceFolder, rawTargetPath)
+                : rawTargetPath;
             displayFileName = targetPath?.split(/[\\/]/).pop() || targetPath || 'workspace-change';
+            displayFilePath = targetPath || rawTargetPath || displayFileName;
 
             if (workspaceFolder && targetPath) {
                 originalUri = vscode.Uri.joinPath(workspaceFolder.uri, targetPath);
@@ -140,10 +147,10 @@ export async function showDiff(diffPatch: string): Promise<void> {
     const fileName = displayFileName;
 
     const leftUri = vscode.Uri.parse(
-        `${originalScheme}:${fileName}?ts=${Date.now()}`
+        `${originalScheme}:${encodeURIComponent(fileName)}?ts=${Date.now()}`
     );
     const rightUri = vscode.Uri.parse(
-        `${patchedScheme}:${fileName}?ts=${Date.now()}`
+        `${patchedScheme}:${encodeURIComponent(fileName)}?ts=${Date.now()}`
     );
 
     // Open the native diff editor.
@@ -151,7 +158,7 @@ export async function showDiff(diffPatch: string): Promise<void> {
         'vscode.diff',
         leftUri,
         rightUri,
-        `BeliefGuard: ${fileName} (Current ↔ Proposed)`
+        `BeliefGuard: ${displayFilePath} (Current ↔ Proposed)`
     );
 
     // Dispose providers after a short delay to let VS Code read the content.
