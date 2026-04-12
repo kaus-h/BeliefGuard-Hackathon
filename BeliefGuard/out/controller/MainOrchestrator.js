@@ -33,6 +33,7 @@ const LLMClient_1 = require("../ai/LLMClient");
 const ConfidenceGate_1 = require("../gate/ConfidenceGate");
 const QuestionGenerator_1 = require("../gate/QuestionGenerator");
 const PatchValidator_1 = require("../validation/PatchValidator");
+const unifiedDiff_1 = require("../utils/unifiedDiff");
 // ── Constants ───────────────────────────────────────────────────────
 /** Maximum number of INSPECT_MORE re-grounding cycles before forcing ASK_USER. */
 const MAX_INSPECT_CYCLES = 2;
@@ -93,6 +94,7 @@ class MainOrchestrator {
             // ── Step 3: Push beliefs → thinkN State (Agent 3) ───────
             this.provider.postProcessing('Registering beliefs in the Repo Belief Graph…');
             this.beliefManager.addBeliefs(agentPlan.extractedBeliefs);
+            this.pushBeliefGraphSnapshot();
             this.audit('beliefs', 'Beliefs registered in local state', `Session store now tracks ${this.beliefManager.getAllBeliefs().length} beliefs.`, 'success', this.summarizeBeliefs(this.beliefManager.getAllBeliefs()));
             // Feed the LLM output to thinkN for cloud-side extraction & fusion
             const thinkNResult = await this.beliefManager.feedOutput(JSON.stringify(agentPlan), 'llm-plan-extraction');
@@ -116,13 +118,16 @@ class MainOrchestrator {
             // ── Step 10: Post-Patch Validation (Agent 5) ────────────
             this.provider.postProcessing('Validating generated patch against constraints…');
             const validationResult = (0, PatchValidator_1.validateGeneratedPatch)(diffPatch, allBeliefs);
+            const patchSummary = (0, unifiedDiff_1.summarizeUnifiedDiff)(diffPatch);
             // ── Step 11: Dispatch to Webview (Agent 1) ──────────────
             if (validationResult.isValid) {
                 this.audit('validation', 'Patch validation passed', 'Patch satisfied the current validated constraints.', 'success');
-                this.provider.postPatchReady(diffPatch);
+                this.pushBeliefGraphSnapshot();
+                this.provider.postPatchReady(diffPatch, patchSummary);
             }
             else {
                 this.audit('validation', 'Patch validation failed', `Patch violated ${validationResult.violations.length} constraint(s).`, 'error', validationResult.violations);
+                this.pushBeliefGraphSnapshot();
                 this.provider.postBlocked('The generated patch violates one or more user constraints.', validationResult.violations);
             }
         }
@@ -188,6 +193,7 @@ class MainOrchestrator {
         }
         // Run contradiction detection against the full plan context
         this.detectAndMarkContradictions();
+        this.pushBeliefGraphSnapshot();
     }
     /**
      * Runs the BeliefGraph contradiction detector and marks any
@@ -327,6 +333,7 @@ class MainOrchestrator {
                             });
                         }
                     }
+                    this.pushBeliefGraphSnapshot();
                     // ── Step 8: Loop back to step 5 ─────────────────
                     continue;
                 }
@@ -423,6 +430,9 @@ class MainOrchestrator {
             case 'BLOCK':
                 return `Blocking execution because ${context.contradictedCount} contradiction(s) were detected against immutable facts or user constraints.`;
         }
+    }
+    pushBeliefGraphSnapshot() {
+        this.provider.postBeliefGraph(this.beliefManager.getAllBeliefs());
     }
 }
 exports.MainOrchestrator = MainOrchestrator;

@@ -112,7 +112,10 @@ export class LLMClient {
                 2
             );
 
-            return sanitizeAgentPlan(AgentPlanSchema.parse(extractJsonObject(text)));
+            return tunePlanForGate(
+                sanitizeAgentPlan(AgentPlanSchema.parse(extractJsonObject(text))),
+                task
+            );
         } catch (error: any) {
             console.warn('[BeliefGuard AI] Structured extraction failed, trying JSON text fallback:', error);
 
@@ -123,7 +126,7 @@ export class LLMClient {
                 );
 
                 const parsed = AgentPlanSchema.parse(extractJsonObject(text));
-                return sanitizeAgentPlan(parsed);
+                return tunePlanForGate(sanitizeAgentPlan(parsed), task);
             } catch (fallbackError: any) {
                 console.error('[BeliefGuard AI] Failed to generate plan and extract beliefs:', fallbackError);
                 throw new Error(`LLM Extraction Error: ${fallbackError?.message || error?.message || 'Unknown error'}`);
@@ -267,15 +270,74 @@ function sanitizeAgentPlan(plan: z.infer<typeof AgentPlanSchema>): AgentPlan {
 }
 
 function sanitizeBelief(belief: z.infer<typeof BeliefSchema>): Belief {
+    const confidenceScore = Math.max(0, Math.min(1, belief.confidenceScore));
+    const isRepositoryFact = belief.type === 'REPO_FACT';
+
     return {
         id: isUuid(belief.id) ? belief.id : randomUUID(),
         statement: belief.statement,
         type: belief.type,
-        confidenceScore: Math.max(0, Math.min(1, belief.confidenceScore)),
+        confidenceScore,
         riskLevel: belief.riskLevel,
         evidenceIds: Array.isArray(belief.evidenceIds) ? belief.evidenceIds : [],
-        isValidated: Boolean(belief.isValidated),
+        isValidated: isRepositoryFact ? Boolean(belief.isValidated && confidenceScore >= 0.85) : false,
         contradictions: Array.isArray(belief.contradictions) ? belief.contradictions : [],
+    };
+}
+
+function tunePlanForGate(plan: AgentPlan, task: string): AgentPlan {
+    const tunedBeliefs = plan.extractedBeliefs.map((belief) => tuneBeliefForGate(belief));
+
+    const assumptionIndexes = tunedBeliefs
+        .map((belief, index) => ({ belief, index }))
+        .filter(({ belief }) => belief.type === 'AGENT_ASSUMPTION');
+
+    const taskLooksHighImpact =
+        /auth|authori|database|schema|migration|config|environment|env|route|router|api|permission|deploy|infra|security|workspace|multi[- ]file|multiple files?/i.test(task) ||
+        plan.targetFiles.length > 1;
+
+    if (
+        taskLooksHighImpact &&
+        assumptionIndexes.length > 0 &&
+        !assumptionIndexes.some(({ belief }) => belief.riskLevel === 'HIGH')
+    ) {
+        const lowestConfidence = [...assumptionIndexes].sort(
+            (left, right) => left.belief.confidenceScore - right.belief.confidenceScore
+        )[0];
+
+        tunedBeliefs[lowestConfidence.index] = {
+            ...lowestConfidence.belief,
+            riskLevel: 'HIGH',
+        };
+    }
+
+    return {
+        ...plan,
+        extractedBeliefs: tunedBeliefs,
+    };
+}
+
+function tuneBeliefForGate(belief: Belief): Belief {
+    const highImpactPattern = /auth|authori|database|schema|migration|config|environment|env|route|router|api|permission|deploy|infra|security|payment|token|session/i;
+
+    let riskLevel = belief.riskLevel;
+
+    if (belief.type === 'AGENT_ASSUMPTION') {
+        if (highImpactPattern.test(belief.statement)) {
+            riskLevel = 'HIGH';
+        } else if (belief.confidenceScore < 0.75 && riskLevel === 'LOW') {
+            riskLevel = 'MEDIUM';
+        }
+    }
+
+    if (belief.type === 'TASK_BELIEF' && belief.confidenceScore < 0.6 && riskLevel === 'LOW') {
+        riskLevel = 'MEDIUM';
+    }
+
+    return {
+        ...belief,
+        riskLevel,
+        isValidated: belief.type === 'REPO_FACT' ? belief.isValidated : false,
     };
 }
 

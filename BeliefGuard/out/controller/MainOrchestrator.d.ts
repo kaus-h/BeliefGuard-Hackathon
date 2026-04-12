@@ -65,5 +65,6 @@ export declare class MainOrchestrator {
     private summarizeBeliefs;
     private buildGateDecisionContext;
     private describeGateDecision;
+    private pushBeliefGraphSnapshot;
 }
 //# sourceMappingURL=MainOrchestrator.d.ts.map

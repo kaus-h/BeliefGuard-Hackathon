@@ -65,6 +65,20 @@ export interface ValidationResult {
     diffPatch: string;
 }
 
+export interface PatchFileSummary {
+    path: string;
+    status: 'ADDED' | 'MODIFIED' | 'DELETED';
+    additions: number;
+    deletions: number;
+}
+
+export interface PatchSummary {
+    fileCount: number;
+    additions: number;
+    deletions: number;
+    files: PatchFileSummary[];
+}
+
 // ── Audit / Diagnostics Types ─────────────────────────────────────────
 
 export type AuditLevel = 'info' | 'success' | 'warning' | 'error';
@@ -103,8 +117,9 @@ export type WebviewToExtensionMessage =
 /** Messages flowing FROM the extension host TO the Webview. */
 export type ExtensionToWebviewMessage =
     | { type: 'BELIEFS_EXTRACTED'; payload: { beliefs: Belief[]; questions: ClarificationQuestion[] } }
+    | { type: 'BELIEF_GRAPH_UPDATED'; payload: { beliefs: Belief[] } }
     | { type: 'PROCESSING'; payload: { message: string } }
     | { type: 'AUDIT_EVENT'; payload: { event: AuditEvent } }
-    | { type: 'PATCH_READY'; payload: { diffPatch: string } }
+    | { type: 'PATCH_READY'; payload: { diffPatch: string; summary: PatchSummary } }
     | { type: 'BLOCKED'; payload: { reason: string; violations: Belief[] } }
     | { type: 'ERROR'; payload: { message: string } };

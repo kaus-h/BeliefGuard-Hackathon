@@ -12,6 +12,12 @@ For each extracted belief, assign a:
 1. RiskLevel: 'LOW', 'MEDIUM', or 'HIGH', based on the potential blast radius if this assumption is incorrect (e.g. database schema changes are HIGH, cosmetic UI changes are LOW).
 2. ConfidenceScore: A float between 0.0 and 1.0 indicating how confident you are in this belief natively based on the context.
 
+Important extraction requirements:
+- Treat implementation choices that are not explicitly grounded in the repository as AGENT_ASSUMPTION beliefs.
+- When the task touches authentication, authorization, routing, APIs, database/schema, configuration, environment variables, infrastructure, file creation, or multi-file changes, you MUST include the major uncertain implementation choices as HIGH-risk AGENT_ASSUMPTION beliefs.
+- Prefer surfacing uncertainty over hiding it. If an assumption could materially change the code or architecture, classify it as MEDIUM or HIGH risk instead of LOW.
+- Do not mark inferred beliefs as validated. Only direct immutable repository facts should have high confidence.
+
 Repository Context:
 ###
 ${repoContext}

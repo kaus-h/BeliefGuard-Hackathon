@@ -5,7 +5,7 @@
 // ──────────────────────────────────────────────────────────────────────
 
 import * as vscode from 'vscode';
-import { applyUnifiedDiffToText, findMatchingDiffChange, normalizeUnifiedDiffText, parseUnifiedDiff } from '../utils/unifiedDiff';
+import { UnifiedDiffChange, applyUnifiedDiffToText, findMatchingDiffChange, normalizeUnifiedDiffText, parseUnifiedDiff } from '../utils/unifiedDiff';
 
 /**
  * Opens a VS Code diff editor showing the proposed patch applied to
@@ -16,35 +16,91 @@ import { applyUnifiedDiffToText, findMatchingDiffChange, normalizeUnifiedDiffTex
  *   than a unified diff so we can display it without a diff-apply lib.
  */
 export async function showDiff(diffPatch: string): Promise<void> {
-    const activeEditor = vscode.window.activeTextEditor;
     const normalizedDiff = normalizeUnifiedDiffText(diffPatch);
     const parsedChanges = parseUnifiedDiff(normalizedDiff);
+    const activeEditor = vscode.window.activeTextEditor;
+
+    if (parsedChanges.length === 0) {
+        throw new Error('No file changes were found in the proposed patch.');
+    }
+
+    let selectedRelativePath: string | undefined = activeEditor
+        ? vscode.workspace.asRelativePath(activeEditor.document.uri)
+        : undefined;
+
+    if (parsedChanges.length > 1) {
+        const quickPickItems: vscode.QuickPickItem[] = parsedChanges.map((change: UnifiedDiffChange) => {
+            const path = change.newPath ?? change.oldPath ?? 'unknown';
+            return {
+                label: path,
+                description: change.oldPath === null
+                    ? 'Added file'
+                    : change.newPath === null
+                        ? 'Deleted file'
+                        : 'Modified file',
+            };
+        });
+
+        const hasActiveMatch = selectedRelativePath
+            ? parsedChanges.some((change: UnifiedDiffChange) => findMatchingDiffChange([change], selectedRelativePath || ''))
+            : false;
+
+        if (!hasActiveMatch) {
+            const picked = await vscode.window.showQuickPick<vscode.QuickPickItem>(quickPickItems, {
+                placeHolder: 'Select a file from the workspace patch to review',
+            });
+            if (!picked) {
+                return;
+            }
+            selectedRelativePath = picked.label;
+        }
+    }
 
     // Determine original content.
     let originalUri: vscode.Uri;
     let originalContent: string;
     let proposedContent: string;
+    let displayFileName = 'workspace-change';
 
-    if (activeEditor) {
-        originalUri = activeEditor.document.uri;
-        originalContent = activeEditor.document.getText();
-
-        const matchingChange = findMatchingDiffChange(
-            parsedChanges,
-            vscode.workspace.asRelativePath(activeEditor.document.uri)
-        );
-
+    if (selectedRelativePath) {
+        const matchingChange = findMatchingDiffChange(parsedChanges, selectedRelativePath);
         if (matchingChange) {
-            try {
-                proposedContent = applyUnifiedDiffToText(
-                    originalContent,
-                    matchingChange
-                );
-            } catch (error) {
-                console.warn('[BeliefGuard] Failed to build diff preview from unified diff:', error);
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            const targetPath = matchingChange.newPath ?? matchingChange.oldPath;
+            displayFileName = targetPath?.split(/[\\/]/).pop() || targetPath || 'workspace-change';
+
+            if (workspaceFolder && targetPath) {
+                originalUri = vscode.Uri.joinPath(workspaceFolder.uri, targetPath);
+
+                if (matchingChange.oldPath === null) {
+                    originalContent = '';
+                    proposedContent = applyUnifiedDiffToText('', matchingChange);
+                } else {
+                    try {
+                        const document = await vscode.workspace.openTextDocument(originalUri);
+                        originalContent = document.getText();
+                    } catch (_error) {
+                        originalContent = '';
+                    }
+
+                    try {
+                        proposedContent = applyUnifiedDiffToText(
+                            originalContent,
+                            matchingChange
+                        );
+                    } catch (error) {
+                        console.warn('[BeliefGuard] Failed to build diff preview from unified diff:', error);
+                        proposedContent = normalizedDiff;
+                    }
+                }
+            } else {
+                originalUri = vscode.Uri.parse('untitled:Original');
+                originalContent = '';
                 proposedContent = normalizedDiff;
             }
         } else {
+            originalUri = vscode.Uri.parse('untitled:Original');
+            originalContent = '';
             proposedContent = normalizedDiff;
         }
     } else {
@@ -81,9 +137,7 @@ export async function showDiff(diffPatch: string): Promise<void> {
     );
 
     // Build virtual URIs.
-    const fileName = activeEditor
-        ? activeEditor.document.fileName.split(/[\\/]/).pop() || 'file'
-        : 'file';
+    const fileName = displayFileName;
 
     const leftUri = vscode.Uri.parse(
         `${originalScheme}:${fileName}?ts=${Date.now()}`

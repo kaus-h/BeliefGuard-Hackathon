@@ -49,6 +49,18 @@ export interface ValidationResult {
     /** Raw unified diff proposed for application. */
     diffPatch: string;
 }
+export interface PatchFileSummary {
+    path: string;
+    status: 'ADDED' | 'MODIFIED' | 'DELETED';
+    additions: number;
+    deletions: number;
+}
+export interface PatchSummary {
+    fileCount: number;
+    additions: number;
+    deletions: number;
+    files: PatchFileSummary[];
+}
 export type AuditLevel = 'info' | 'success' | 'warning' | 'error';
 export type AuditPhase = 'session' | 'context' | 'extraction' | 'beliefs' | 'grounding' | 'gate' | 'questions' | 'patch' | 'validation';
 export interface AuditEvent {
@@ -86,6 +98,11 @@ export type ExtensionToWebviewMessage = {
         questions: ClarificationQuestion[];
     };
 } | {
+    type: 'BELIEF_GRAPH_UPDATED';
+    payload: {
+        beliefs: Belief[];
+    };
+} | {
     type: 'PROCESSING';
     payload: {
         message: string;
@@ -99,6 +116,7 @@ export type ExtensionToWebviewMessage = {
     type: 'PATCH_READY';
     payload: {
         diffPatch: string;
+        summary: PatchSummary;
     };
 } | {
     type: 'BLOCKED';

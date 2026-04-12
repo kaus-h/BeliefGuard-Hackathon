@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import type { PatchFileSummary, PatchSummary } from '../types';
 
 export interface UnifiedDiffChange {
     oldPath: string | null;
@@ -155,6 +156,47 @@ export function findMatchingDiffChange(
             change.oldPath?.endsWith(`/${normalized}`)
         );
     });
+}
+
+export function summarizeUnifiedDiff(diffText: string): PatchSummary {
+    const changes = parseUnifiedDiff(diffText);
+    const files: PatchFileSummary[] = changes.map((change) => {
+        const path = change.newPath ?? change.oldPath ?? 'unknown';
+        const status = change.oldPath === null
+            ? 'ADDED'
+            : change.newPath === null
+                ? 'DELETED'
+                : 'MODIFIED';
+
+        let additions = 0;
+        let deletions = 0;
+        for (const hunk of change.hunks) {
+            for (const line of hunk.lines) {
+                if (!line || line.startsWith('+++') || line.startsWith('---') || line.startsWith('\\')) {
+                    continue;
+                }
+                if (line.startsWith('+')) {
+                    additions++;
+                } else if (line.startsWith('-')) {
+                    deletions++;
+                }
+            }
+        }
+
+        return {
+            path,
+            status,
+            additions,
+            deletions,
+        };
+    });
+
+    return {
+        fileCount: files.length,
+        additions: files.reduce((sum, file) => sum + file.additions, 0),
+        deletions: files.reduce((sum, file) => sum + file.deletions, 0),
+        files,
+    };
 }
 
 export async function applyUnifiedDiffToWorkspace(diffText: string): Promise<void> {

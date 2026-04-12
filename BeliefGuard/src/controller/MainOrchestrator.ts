@@ -39,6 +39,7 @@ import { LLMClient } from '../ai/LLMClient';
 import { evaluateState, getBlockingContradictions } from '../gate/ConfidenceGate';
 import { generateQuestions } from '../gate/QuestionGenerator';
 import { validateGeneratedPatch } from '../validation/PatchValidator';
+import { summarizeUnifiedDiff } from '../utils/unifiedDiff';
 
 // ── Constants ───────────────────────────────────────────────────────
 /** Maximum number of INSPECT_MORE re-grounding cycles before forcing ASK_USER. */
@@ -128,6 +129,7 @@ export class MainOrchestrator {
                 'Registering beliefs in the Repo Belief Graph…'
             );
             this.beliefManager.addBeliefs(agentPlan.extractedBeliefs);
+            this.pushBeliefGraphSnapshot();
             this.audit(
                 'beliefs',
                 'Beliefs registered in local state',
@@ -189,6 +191,7 @@ export class MainOrchestrator {
                 diffPatch,
                 allBeliefs
             );
+            const patchSummary = summarizeUnifiedDiff(diffPatch);
 
             // ── Step 11: Dispatch to Webview (Agent 1) ──────────────
             if (validationResult.isValid) {
@@ -198,7 +201,8 @@ export class MainOrchestrator {
                     'Patch satisfied the current validated constraints.',
                     'success'
                 );
-                this.provider.postPatchReady(diffPatch);
+                this.pushBeliefGraphSnapshot();
+                this.provider.postPatchReady(diffPatch, patchSummary);
             } else {
                 this.audit(
                     'validation',
@@ -207,6 +211,7 @@ export class MainOrchestrator {
                     'error',
                     validationResult.violations
                 );
+                this.pushBeliefGraphSnapshot();
                 this.provider.postBlocked(
                     'The generated patch violates one or more user constraints.',
                     validationResult.violations
@@ -326,6 +331,7 @@ export class MainOrchestrator {
 
         // Run contradiction detection against the full plan context
         this.detectAndMarkContradictions();
+        this.pushBeliefGraphSnapshot();
     }
 
     /**
@@ -550,6 +556,8 @@ export class MainOrchestrator {
                         }
                     }
 
+                    this.pushBeliefGraphSnapshot();
+
                     // ── Step 8: Loop back to step 5 ─────────────────
                     continue;
                 }
@@ -582,7 +590,7 @@ export class MainOrchestrator {
             };
 
             // Listen for each individual answer from the Webview
-            const sub = this.provider.onUserAnswered((payload) => {
+            const sub = this.provider.onUserAnswered((payload: { beliefId: string; answer: string }) => {
                 answers.push(payload);
                 if (answers.length >= expectedCount) {
                     finish();
@@ -688,5 +696,9 @@ export class MainOrchestrator {
             case 'BLOCK':
                 return `Blocking execution because ${context.contradictedCount} contradiction(s) were detected against immutable facts or user constraints.`;
         }
+    }
+
+    private pushBeliefGraphSnapshot(): void {
+        this.provider.postBeliefGraph(this.beliefManager.getAllBeliefs());
     }
 }

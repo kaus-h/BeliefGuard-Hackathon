@@ -1,21 +1,15 @@
 import * as vscode from 'vscode';
-import { AuditEvent, Belief, ClarificationQuestion } from '../types';
-/**
- * Provides the BeliefGuard sidebar webview inside VS Code.
- */
+import { AuditEvent, Belief, ClarificationQuestion, PatchSummary } from '../types';
 export declare class BeliefGuardProvider implements vscode.WebviewViewProvider {
     private readonly _extensionUri;
-    /** Must match the id declared in package.json → contributes.views. */
     static readonly viewType = "beliefguard.sidebarView";
     private _view?;
     private _latestDiffPatch?;
-    /** Event bus so other modules can react to user answers. */
     private readonly _onUserAnswered;
     readonly onUserAnswered: vscode.Event<{
         beliefId: string;
         answer: string;
     }>;
-    /** Event bus for task submission. */
     private readonly _onTaskSubmitted;
     readonly onTaskSubmitted: vscode.Event<string>;
     constructor(_extensionUri: vscode.Uri);
@@ -23,7 +17,8 @@ export declare class BeliefGuardProvider implements vscode.WebviewViewProvider {
     postProcessing(message: string): void;
     postAuditEvent(event: AuditEvent): void;
     postBeliefs(beliefs: Belief[], questions: ClarificationQuestion[]): void;
-    postPatchReady(diffPatch: string): void;
+    postBeliefGraph(beliefs: Belief[]): void;
+    postPatchReady(diffPatch: string, summary: PatchSummary): void;
     postBlocked(reason: string, violations: Belief[]): void;
     postError(message: string): void;
     getLatestDiffPatch(): string | undefined;
