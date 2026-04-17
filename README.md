@@ -104,7 +104,7 @@ Prerequisites:
 Install and open:
 
 ```bash
-cd /home/runner/work/BeliefGuard-Hackathon/BeliefGuard-Hackathon/BeliefGuard
+cd BeliefGuard
 npm install
 ```
 
