@@ -114,7 +114,8 @@ Run the extension locally:
 
 1. Open `BeliefGuard` folder in VS Code
 2. Press `F5` (Run and Debug: Extension)
-3. In the Extension Development Host window, open the BeliefGuard sidebar and submit a task
+3. In the Extension Development Host window, open a terminal window and run `npm i beliefs`
+4. Open the BeliefGuard sidebar and submit a task
 
 ## Configuration
 
