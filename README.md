@@ -1,128 +1,195 @@
-# 🛡️ BeliefGuard
+# BeliefGuard
 
-**Preventing Agent Drift through Belief-Aware Governance.**
+BeliefGuard is a VS Code extension that adds a belief-aware control layer to AI-assisted code changes. Before edits are applied, it extracts assumptions, grounds them against repository evidence, evaluates risk via a deterministic gate, and asks for user clarification when uncertainty is high.
 
-BeliefGuard is a VS Code / Antigravity extension that inserts a **belief-aware governance layer** between a developer and an autonomous coding workflow. Its primary purpose is to prevent **agent drift**: the failure mode where an AI coding agent turns uncertain, implicit assumptions into concrete file edits without first validating whether those assumptions are true or acceptable to the user.
+This project was built in the VillageHacks 2026 context with thinkN (`beliefs` SDK) as the belief-state backbone.
 
----
+## Table of Contents
+- [Why this project exists](#why-this-project-exists)
+- [What BeliefGuard does](#what-beliefguard-does)
+- [Architecture](#architecture)
+- [End-to-end pipeline](#end-to-end-pipeline)
+- [Repository layout](#repository-layout)
+- [Quick Start](#quick-start)
+- [Configuration](#configuration)
+- [Development](#development)
+- [Testing and validation](#testing-and-validation)
+- [Known limitations](#known-limitations)
+- [Roadmap](#roadmap)
+- [Hackathon context](#hackathon-context)
 
-## 🚀 The Core Thesis
+## Why this project exists
 
-Coding agents fail NOT because they lack context, but because they lack **structured, explicit beliefs**.
+AI coding agents can fail when implicit assumptions become concrete edits without validation. BeliefGuard addresses this by making assumptions explicit (`Belief` objects), validating them against repository evidence and user input, and gating patch generation until risk is acceptable.
 
-Traditional agent workflows retrieve files, ask an LLM for a solution, and apply a patch. BeliefGuard intercepts this flow to ask:
-- What is the agent assuming?
-- What is actually supported by repository evidence?
-- Which uncertainties are dangerous enough to block edits?
-- What should be clarified with the developer before code is touched?
+## What BeliefGuard does
 
----
+- Collects workspace context (directory tree, selected manifests, visible editors)
+- Uses an LLM to produce:
+  - an execution plan (`AgentPlan`)
+  - explicit beliefs (`REPO_FACT`, `TASK_BELIEF`, `AGENT_ASSUMPTION`, `USER_CONSTRAINT`)
+- Stores and updates belief state locally (`SessionStore`) and remotely via thinkN (`beliefs` SDK)
+- Grounds beliefs via heuristics over files/config
+- Runs a confidence/risk gate with four decisions:
+  - `PROCEED`
+  - `INSPECT_MORE`
+  - `ASK_USER`
+  - `BLOCK`
+- Generates structured patches and supports per-file review/approval in the webview
+- Validates generated patches against validated `USER_CONSTRAINT` beliefs before applying
 
-## 🏛️ Architectural Pillars
+## Architecture
 
-BeliefGuard is built on three foundational mechanisms:
+Core implementation is under `BeliefGuard/src`.
 
-### 1. Repo Belief Graph
-A dynamic, structured representation of the system's understanding. It maps:
-- **Repo Facts**: Immutable truths extracted from manifests (e.g., `package.json`, `tsconfig.json`).
-- **Agent Assumptions**: Inferred logic that lacks immediate verification.
-- **User Constraints**: Facts explicitly confirmed by the developer.
-- **Evidence**: Direct pointers to workspace artifacts supporting or contradicting beliefs.
+- **Extension entrypoint**: `src/extension.ts`
+  - Registers sidebar, commands, and loads `.env`
+- **UI (webview provider)**: `src/webview/BeliefGuardProvider.ts`
+  - Task submission, clarification messages, patch/file-review messaging
+- **Orchestrator**: `src/controller/MainOrchestrator.ts`
+  - Coordinates the guarded workflow and loop behavior
+- **Belief state layer**:
+  - `src/beliefs/ThinkNClient.ts` (local + thinkN integration)
+  - `src/state/SessionStore.ts` (in-memory singleton)
+  - `src/beliefs/BeliefGraph.ts` (querying + contradiction heuristics)
+- **Context and evidence**:
+  - `src/context/WorkspaceScanner.ts`
+  - `src/context/EvidenceLocator.ts`
+- **Gate and questions**:
+  - `src/gate/ConfidenceGate.ts`
+  - `src/gate/QuestionGenerator.ts`
+- **Patch path**:
+  - `src/ai/LLMClient.ts`
+  - `src/validation/PatchValidator.ts`
+  - `src/commands/showDiff.ts`, `src/commands/applyPatch.ts`
 
-### 2. Confidence-to-Action Gate
-A deterministic policy engine that governs the execution flow based on belief risk and confidence scores:
-- **`PROCEED`**: High confidence, no unresolved high-risk beliefs. 🟢
-- **`INSPECT_MORE`**: Partial uncertainty; triggers autonomous repository scanning. 🔍
-- **`ASK_USER`**: High-risk uncertainty; escalates to a clarifying question in the UI. ❓
-- **`BLOCK`**: Architectural violation or unresolvable contradiction detected. 🛑
+## End-to-end pipeline
 
-### 3. thinkN / `beliefs` SDK Integration
-The central nervous system for belief state. It provides:
-- **Persistent Memory**: Tracks beliefs across iterative prompting cycles.
-- **Contradiction Tracking**: Native SDK logic to detect if new propositions conflict with validated state.
-- **Thread-Scoped Execution**: Each task maintains its own isolated belief context.
+`MainOrchestrator.runGuardedTask()` implements the guarded flow:
 
----
+1. Start task and initialize thread-scoped thinkN context
+2. Gather workspace context
+3. Extract plan + beliefs (LLM)
+4. Register beliefs in local state + sync to thinkN
+5. Ground beliefs against workspace evidence
+6. Evaluate gate (`PROCEED` / `INSPECT_MORE` / `ASK_USER` / `BLOCK`)
+7. If `ASK_USER`, collect answers and convert into high-confidence constraints
+8. Re-evaluate gate (bounded loops)
+9. Expand context (bounded) and generate patch
+10. Validate patch against user constraints
+11. Present diff/per-file review, then apply approved changes
 
-## 🔄 The 11-Step Guarded Pipeline
+## Repository layout
 
-1.  **Task Submission**: User enters a request in the sidebar.
-2.  **Context Collection**: Scanner gathers workspace structure and manifests.
-3.  **Plan & Belief Extraction**: LLM generates an execution plan and explicit beliefs (no code yet).
-4.  **Graph Population**: Beliefs are registered in local state and synced to thinkN.
-5.  **Evidence Grounding**: Heuristics scan the workspace to support or contradict beliefs.
-6.  **Gate Evaluation**: The policy engine determines the next action.
-7.  **Clarification Loop**: If the gate triggers `ASK_USER`, the developer answers targeted questions.
-8.  **Re-Evaluation**: Verified answers become `USER_CONSTRAINT` nodes; the gate re-evaluates.
-9.  **Patch Generation**: Once the gate reaches `PROCEED`, the LLM generates a code patch.
-10. **Post-Patch Validation**: The patch is verified against the validated belief graph.
-11. **Review & Apply**: The developer reviews the diff and applies it to the workspace.
+Top-level repository:
 
----
+- `README.md` (this file)
+- `BeliefGuard/` (VS Code extension code)
+- `VS Code Extension_ Belief Graph & Action Gate.txt` (original long-form blueprint)
 
-## 📂 Repository Structure
+Inside `BeliefGuard/`:
 
-- **`BeliefGuard/src/`**: The core extension source code.
-  - **`extension.ts`**: Entry point and command registration.
-  - **`controller/MainOrchestrator.ts`**: The "brain" managing the 11-step pipeline.
-  - **`beliefs/`**: thinkN integration and graph logic.
-  - **`gate/`**: Confidence gate and question generation.
-  - **`ai/`**: LLM clients and prompt templates.
-  - **`webview/`**: Sidebar UI implementation.
-  - **`context/`**: Workspace scanning and evidence discovery.
-  - **`utils/`**: Unified diff handling and file system helpers.
-- **`AGENTS.md`**: Authoritative onboarding and handoff reference.
-- **`New_sprint.md`**: Current development focus and roadmap.
-- **`VS Code Extension_ Belief Graph & Action Gate.txt`**: The original architectural blueprint.
+- `package.json` (scripts and extension manifest)
+- `src/` (TypeScript source)
+- `out/` (compiled output in current repo snapshot)
+- `vitest.config.mjs`, `tsconfig.json`
 
----
+## Quick Start
 
-## 🛠️ Setup & Development
+Prerequisites:
 
-### Prerequisites
-- [VS Code](https://code.visualstudio.com/)
-- [Node.js](https://nodejs.org/) (v18+)
+- VS Code (extension targets `^1.85.0`)
+- Node.js (18+ recommended)
 
-### Installation
-1.  Clone the repository.
-2.  Navigate to the `BeliefGuard` directory:
-    ```bash
-    cd BeliefGuard
-    ```
-3.  Install dependencies:
-    ```bash
-    npm install
-    ```
-4.  Configure your environment:
-    Create a `.env` file in the `BeliefGuard` root and add your keys:
-    ```env
-    OPENROUTER_API_KEY=your_key_here
-    THINKN_API_KEY=your_key_here
-    ```
+Install and open:
 
-### Running the Extension
-1.  Open the project in VS Code.
-2.  Press **F5** (or go to `Run and Debug` -> `Extension`) to launch the Extension Development Host.
-3.  In the new window, find the **BeliefGuard** icon in the Activity Bar.
+```bash
+cd /home/runner/work/BeliefGuard-Hackathon/BeliefGuard-Hackathon/BeliefGuard
+npm install
+```
 
----
+Create `BeliefGuard/.env` (see [Configuration](#configuration)).
 
-## 🌊 Current Sprint Focus
+Run the extension locally:
 
-We are currently focused on **thinkN E2E Recovery and Patch Channel Hardening**:
-- Restoring full thread-scoped thinkN integration.
-- Implementing "Fail-Fast" readiness gating.
-- Refining structured per-file patch reviews.
-- Ensuring strict separation between assistant narration and workspace edits.
+1. Open `BeliefGuard` folder in VS Code
+2. Press `F5` (Run and Debug: Extension)
+3. In the Extension Development Host window, open the BeliefGuard sidebar and submit a task
 
----
+## Configuration
 
-## 🏆 Hackathon Context
+Environment variables used by the current implementation:
 
-BeliefGuard was designed for **VillageHacks 2026** under the **thinkN** track at Arizona State University. It addresses the critical gap between agent memory and belief coherence in autonomous software engineering.
+- `BELIEFS_KEY` (required): thinkN `beliefs` SDK key
+- `OPENROUTER_API_KEY` (required unless `OPENAI_API_KEY` is set): model API key
+- `OPENAI_API_KEY` (fallback for API key check in `LLMClient`)
+- `OPENROUTER_MODEL` (optional, default: `minimax/minimax-m2.5:free`)
+- `OPENROUTER_BASE_URL` (optional, default: `https://openrouter.ai/api/v1`)
+- `OPENROUTER_SITE_URL` (optional, used as `HTTP-Referer` header)
+- `OPENROUTER_APP_NAME` (optional, used as `X-Title` header)
+- `BELIEFS_DEBUG` (optional, set to `true` for SDK debug mode)
 
----
+Example `.env`:
 
-## ⚖️ License
+```env
+BELIEFS_KEY=your_thinkn_key
+OPENROUTER_API_KEY=your_openrouter_key
+OPENROUTER_MODEL=minimax/minimax-m2.5:free
+```
 
-[MIT License](LICENSE) (or as per project configuration).
+## Development
+
+From `BeliefGuard/`:
+
+```bash
+npm run compile
+npm run watch
+npm run lint
+npm test
+npm run test:watch
+```
+
+Command registration (extension manifest):
+
+- `beliefguard.startGuardedTask`
+- `beliefguard.showDiff`
+
+Runtime command also registered in code:
+
+- `beliefguard.applyPatch`
+
+## Testing and validation
+
+Current test configuration is Vitest (`vitest.config.mjs`) and tests are under `src/__tests__/**/*.test.ts`.
+
+Representative areas covered in existing tests:
+
+- Gate decision priority and behavior
+- SessionStore invariants
+- Diff parsing/normalization
+- Constraint-based patch validation
+- thinkN integration conditions
+- Workflow capability checks (structured patch, context expansion, per-file review, streaming)
+
+## Known limitations
+
+Based on current code and repository state:
+
+- `SessionStore` is in-memory only (no persistence across VS Code restarts)
+- Evidence grounding is heuristic (keyword/file-based), not full semantic understanding
+- Guard loops are intentionally bounded (`MAX_INSPECT_CYCLES`, `MAX_CLARIFICATION_LOOPS`, `MAX_CONTEXT_EXPANSION_ITERATIONS`)
+- thinkN is treated as a hard dependency during guarded execution (`BELIEFS_KEY` required)
+- In this repository snapshot, baseline local checks may fail due to environment/dependency setup issues (for example lint/test tooling availability and optional native bindings)
+
+## Roadmap
+
+Current direction (as reflected in code comments/tests and project context):
+
+- Continue hardening thinkN end-to-end readiness and thread-scoped behavior
+- Improve patch channel safety and per-file review ergonomics
+- Refine context expansion and evidence quality
+- Maintain strict separation between assistant narration and applied workspace edits
+
+## Hackathon context
+
+BeliefGuard was developed in the VillageHacks 2026 context under the thinkN-focused challenge area, with emphasis on belief coherence, contradiction handling, and safe autonomous coding workflows.
