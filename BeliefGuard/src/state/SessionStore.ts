@@ -25,6 +25,13 @@ interface SessionState {
     edges: BeliefEdge[];
 }
 
+export interface SessionStoreSnapshot {
+    beliefs: Belief[];
+    evidence: Evidence[];
+    edges: BeliefEdge[];
+    savedAt: string;
+}
+
 // ── Singleton implementation ────────────────────────────────────────────
 
 export class SessionStore {
@@ -151,5 +158,41 @@ export class SessionStore {
     /** Return the count of evidence currently stored. */
     public get evidenceCount(): number {
         return this.state.evidence.size;
+    }
+
+    /**
+     * Export a serializable snapshot of the current graph state. This keeps
+     * persistence adapter choices outside the core store.
+     */
+    public toSnapshot(): SessionStoreSnapshot {
+        return {
+            beliefs: this.getAllBeliefs(),
+            evidence: this.getAllEvidence(),
+            edges: this.getAllEdges(),
+            savedAt: new Date().toISOString(),
+        };
+    }
+
+    /**
+     * Hydrate the store from a previously exported snapshot.
+     * Existing state is replaced atomically from the caller's perspective.
+     */
+    public hydrate(snapshot: SessionStoreSnapshot): void {
+        const beliefs = new Map<string, Belief>();
+        const evidence = new Map<string, Evidence>();
+
+        for (const belief of snapshot.beliefs || []) {
+            beliefs.set(belief.id, belief);
+        }
+
+        for (const artifact of snapshot.evidence || []) {
+            evidence.set(artifact.id, artifact);
+        }
+
+        this.state = {
+            beliefs,
+            evidence,
+            edges: [...(snapshot.edges || [])],
+        };
     }
 }

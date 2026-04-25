@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { BeliefGuardProvider } from './webview/BeliefGuardProvider';
 import { MainOrchestrator } from './controller/MainOrchestrator';
+import { MementoSessionPersistence } from './state/MementoSessionPersistence';
 
 let provider: BeliefGuardProvider | undefined;
 let orchestrator: MainOrchestrator | undefined;
@@ -20,7 +21,10 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // ── Webview Sidebar Provider ────────────────────────────────────
     provider = new BeliefGuardProvider(context.extensionUri);
-    orchestrator = new MainOrchestrator(provider);
+    orchestrator = new MainOrchestrator(
+        provider,
+        new MementoSessionPersistence(context.globalState)
+    );
 
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(

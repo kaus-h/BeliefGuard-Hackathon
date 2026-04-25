@@ -257,6 +257,44 @@ describe('Preservation: SessionStore Synchronous Writes', () => {
             { numRuns: 30 }
         );
     });
+
+    it('exports and hydrates a serializable graph snapshot', () => {
+        const store = SessionStore.getInstance();
+        store.clear();
+
+        const belief = safeBelief();
+        const evidence = {
+            id: 'evidence-1',
+            sourceType: 'FILE' as const,
+            uri: 'src/example.ts',
+            snippet: 'export const safe = true;',
+            weight: 0.8,
+        };
+
+        store.setBelief(belief);
+        store.setEvidence(evidence);
+        store.addEdge({
+            fromId: belief.id,
+            toId: evidence.id,
+            relation: 'SUPPORTED_BY',
+        });
+
+        const snapshot = store.toSnapshot();
+
+        store.clear();
+        expect(store.beliefCount).toBe(0);
+
+        store.hydrate(snapshot);
+        expect(store.getBelief(belief.id)).toEqual(belief);
+        expect(store.getEvidence(evidence.id)).toEqual(evidence);
+        expect(store.getAllEdges()).toEqual([
+            {
+                fromId: belief.id,
+                toId: evidence.id,
+                relation: 'SUPPORTED_BY',
+            },
+        ]);
+    });
 });
 
 describe('Preservation: Empty Patch Handling', () => {

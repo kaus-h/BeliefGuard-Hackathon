@@ -14,6 +14,7 @@ This project was built in the VillageHacks 2026 context with thinkN (`beliefs` S
 - [Configuration](#configuration)
 - [Development](#development)
 - [Testing and validation](#testing-and-validation)
+- [Benchmarks and metrics](#benchmarks-and-metrics)
 - [Known limitations](#known-limitations)
 - [Roadmap](#roadmap)
 - [Hackathon context](#hackathon-context)
@@ -84,6 +85,8 @@ Core implementation is under `BeliefGuard/src`.
 Top-level repository:
 
 - `README.md` (this file)
+- `AGENTS.md` (agent handoff and contributor guide)
+- `UIO_Plan1.md` (current roadmap and metrics plan)
 - `BeliefGuard/` (VS Code extension code)
 - `VS Code Extension_ Belief Graph & Action Gate.txt` (original long-form blueprint)
 
@@ -144,10 +147,12 @@ From `BeliefGuard/`:
 
 ```bash
 npm run compile
+npm run check
 npm run watch
 npm run lint
 npm test
 npm run test:watch
+npm run benchmark
 ```
 
 Command registration (extension manifest):
@@ -171,6 +176,23 @@ Representative areas covered in existing tests:
 - Constraint-based patch validation
 - thinkN integration conditions
 - Workflow capability checks (structured patch, context expansion, per-file review, streaming)
+
+## Benchmarks and metrics
+
+BeliefGuard includes a local benchmark runner for measuring recruiter-relevant engineering outcomes without sending telemetry anywhere:
+
+```bash
+cd BeliefGuard
+npm run benchmark
+npm run metrics -- --repo C:\path\to\target-repo
+```
+
+The benchmark report captures context scan latency, files/LOC scanned, manifest discovery, and a simulated gate decision for a known agent-drift scenario. See:
+
+- `BeliefGuard/benchmarks/README.md`
+- `BeliefGuard/docs/metrics.md`
+- `BeliefGuard/docs/agent-drift-cases.md`
+- `BeliefGuard/docs/architecture.md`
 
 ## Known limitations
 

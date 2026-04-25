@@ -35,8 +35,8 @@ const StructuredPatchEntrySchema = zod_1.z.object({
 }).passthrough();
 const PatchGenerationResultSchema = zod_1.z.object({
     assistantMessage: zod_1.z.string().min(1).describe('A concise user-facing explanation for the chat UI'),
-    diffPatch: zod_1.z.string().default('').describe('A raw unified diff containing only repository file edits, or an empty string when no actionable patch should be produced'),
-    structuredPatch: zod_1.z.array(StructuredPatchEntrySchema).default([]).describe('A structured per-file patch description that complements the legacy unified diff')
+    diffPatch: zod_1.z.string().default('').describe('A structured patch envelope containing only repository file edits, or an empty string when no actionable patch should be produced'),
+    structuredPatch: zod_1.z.array(StructuredPatchEntrySchema).default([]).describe('A structured per-file patch description that can be serialized into the patch envelope')
 }).passthrough();
 const ContextExpansionResultSchema = zod_1.z.object({
     assistantMessage: zod_1.z.string().min(1).describe('A concise user-facing explanation of what additional context is needed'),
@@ -181,7 +181,7 @@ Respond with the JSON object now.`;
     }
     async generateCodePatch(task, plan, validatedBeliefs, repositoryContext = '', callbacks = {}) {
         const systemPrompt = (0, PatchGenerator_1.getPatchGeneratorPrompt)(task, validatedBeliefs, plan, repositoryContext);
-        const patchPrompt = `${systemPrompt}\n\nAdditional output contract:\n- Include a \"structuredPatch\" field when you can identify per-file edits.\n- Keep \"diffPatch\" as the legacy unified diff fallback so older consumers continue to work.\n- If no actionable patch is available, set diffPatch to an empty string and structuredPatch to an empty array.\n`;
+        const patchPrompt = `${systemPrompt}\n\nAdditional output contract:\n- Include a \"structuredPatch\" field when you can identify per-file edits.\n- Keep \"diffPatch\" populated with the structured patch envelope so older consumers continue to work.\n- If no actionable patch is available, set diffPatch to an empty string and structuredPatch to an empty array.\n`;
         try {
             const text = await this.withRetries(
             // Do NOT pass onChunk here — JSON-mode streaming produces raw JSON

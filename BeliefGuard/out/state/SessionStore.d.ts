@@ -15,6 +15,12 @@
  *   public API surface.
  */
 import type { Belief, Evidence, BeliefEdge } from '../beliefs/types';
+export interface SessionStoreSnapshot {
+    beliefs: Belief[];
+    evidence: Evidence[];
+    edges: BeliefEdge[];
+    savedAt: string;
+}
 export declare class SessionStore {
     private static instance;
     /** Retrieve (or lazily create) the global SessionStore instance. */
@@ -54,5 +60,15 @@ export declare class SessionStore {
     get beliefCount(): number;
     /** Return the count of evidence currently stored. */
     get evidenceCount(): number;
+    /**
+     * Export a serializable snapshot of the current graph state. This keeps
+     * persistence adapter choices outside the core store.
+     */
+    toSnapshot(): SessionStoreSnapshot;
+    /**
+     * Hydrate the store from a previously exported snapshot.
+     * Existing state is replaced atomically from the caller's perspective.
+     */
+    hydrate(snapshot: SessionStoreSnapshot): void;
 }
 //# sourceMappingURL=SessionStore.d.ts.map

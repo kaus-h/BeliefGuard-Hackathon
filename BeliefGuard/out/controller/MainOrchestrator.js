@@ -62,6 +62,7 @@ const fs_1 = require("../utils/fs");
 // ── Agent 3: Belief State Manager ───────────────────────────────────
 const ThinkNClient_1 = require("../beliefs/ThinkNClient");
 const BeliefGraph_1 = require("../beliefs/BeliefGraph");
+const SessionStore_1 = require("../state/SessionStore");
 // ── Agent 4: LLM Orchestration ──────────────────────────────────────
 const LLMClient_1 = require("../ai/LLMClient");
 // ── Agent 5: Gate & Validation ──────────────────────────────────────
@@ -88,14 +89,20 @@ class MainOrchestrator {
     provider;
     llmClient;
     beliefManager;
-    constructor(provider) {
+    sessionPersistence;
+    constructor(provider, sessionPersistence) {
         this.provider = provider;
+        this.sessionPersistence = sessionPersistence;
         this.llmClient = new LLMClient_1.LLMClient();
         const workspaceName = vscode.workspace.workspaceFolders?.[0]?.name;
         this.beliefManager = new ThinkNClient_1.BeliefStateManager(workspaceName);
         this.beliefManager.setDiagnosticReporter((event) => {
             this.audit('thinkn', event.title, event.detail, event.level, event.data);
         });
+        if (this.sessionPersistence?.hydrate(SessionStore_1.SessionStore.getInstance())) {
+            this.audit('session', 'Restored persisted belief snapshot', 'Loaded the last saved local belief graph snapshot from VS Code memento.', 'info');
+            this.pushBeliefGraphSnapshot();
+        }
     }
     /**
      * Executes the full 11-step guarded task pipeline.
@@ -787,6 +794,7 @@ class MainOrchestrator {
     }
     pushBeliefGraphSnapshot() {
         this.provider.postBeliefGraph(this.beliefManager.getAllBeliefs());
+        void this.sessionPersistence?.save(SessionStore_1.SessionStore.getInstance());
     }
 }
 exports.MainOrchestrator = MainOrchestrator;

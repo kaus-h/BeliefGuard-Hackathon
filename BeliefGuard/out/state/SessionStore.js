@@ -116,6 +116,37 @@ class SessionStore {
     get evidenceCount() {
         return this.state.evidence.size;
     }
+    /**
+     * Export a serializable snapshot of the current graph state. This keeps
+     * persistence adapter choices outside the core store.
+     */
+    toSnapshot() {
+        return {
+            beliefs: this.getAllBeliefs(),
+            evidence: this.getAllEvidence(),
+            edges: this.getAllEdges(),
+            savedAt: new Date().toISOString(),
+        };
+    }
+    /**
+     * Hydrate the store from a previously exported snapshot.
+     * Existing state is replaced atomically from the caller's perspective.
+     */
+    hydrate(snapshot) {
+        const beliefs = new Map();
+        const evidence = new Map();
+        for (const belief of snapshot.beliefs || []) {
+            beliefs.set(belief.id, belief);
+        }
+        for (const artifact of snapshot.evidence || []) {
+            evidence.set(artifact.id, artifact);
+        }
+        this.state = {
+            beliefs,
+            evidence,
+            edges: [...(snapshot.edges || [])],
+        };
+    }
 }
 exports.SessionStore = SessionStore;
 //# sourceMappingURL=SessionStore.js.map

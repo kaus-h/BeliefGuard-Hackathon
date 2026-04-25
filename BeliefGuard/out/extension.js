@@ -44,6 +44,7 @@ const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const BeliefGuardProvider_1 = require("./webview/BeliefGuardProvider");
 const MainOrchestrator_1 = require("./controller/MainOrchestrator");
+const MementoSessionPersistence_1 = require("./state/MementoSessionPersistence");
 let provider;
 let orchestrator;
 /**
@@ -53,7 +54,7 @@ function activate(context) {
     loadExtensionEnv(context.extensionUri);
     // ── Webview Sidebar Provider ────────────────────────────────────
     provider = new BeliefGuardProvider_1.BeliefGuardProvider(context.extensionUri);
-    orchestrator = new MainOrchestrator_1.MainOrchestrator(provider);
+    orchestrator = new MainOrchestrator_1.MainOrchestrator(provider, new MementoSessionPersistence_1.MementoSessionPersistence(context.globalState));
     context.subscriptions.push(vscode.window.registerWebviewViewProvider(BeliefGuardProvider_1.BeliefGuardProvider.viewType, provider, { webviewOptions: { retainContextWhenHidden: true } }));
     // ── Wire Webview task submission → Orchestrator pipeline ────────
     context.subscriptions.push(provider.onTaskSubmitted((task) => {

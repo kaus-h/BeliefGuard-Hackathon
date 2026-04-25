@@ -20,6 +20,10 @@
       {
         "command": "beliefguard.showDiff",
         "title": "BeliefGuard: Review Proposed Diff"
+      },
+      {
+        "command": "beliefguard.applyPatch",
+        "title": "BeliefGuard: Apply Approved Patch"
       }
     ],
     "viewsContainers": {
@@ -44,8 +48,12 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
+    "check": "npm run compile && npm test",
     "watch": "tsc -watch -p ./",
-    "lint": "eslint src --ext ts",
+    "lint": "tsc -p ./ --noEmit",
+    "benchmark": "node ./scripts/benchmark.mjs",
+    "benchmark:corpus": "node ./scripts/benchmark-corpus.mjs",
+    "metrics": "node ./scripts/benchmark.mjs --write",
     "test": "node ./node_modules/vitest/vitest.mjs run --config ./vitest.config.mjs",
     "test:watch": "node ./node_modules/vitest/vitest.mjs --config ./vitest.config.mjs"
   },

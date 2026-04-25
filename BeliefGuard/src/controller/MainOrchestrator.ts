@@ -33,6 +33,8 @@ import { safeReadFile } from '../utils/fs';
 // ── Agent 3: Belief State Manager ───────────────────────────────────
 import { BeliefStateManager } from '../beliefs/ThinkNClient';
 import { detectContradictions } from '../beliefs/BeliefGraph';
+import { SessionStore } from '../state/SessionStore';
+import { MementoSessionPersistence } from '../state/MementoSessionPersistence';
 
 // ── Agent 4: LLM Orchestration ──────────────────────────────────────
 import { LLMClient } from '../ai/LLMClient';
@@ -74,15 +76,30 @@ export class MainOrchestrator {
     private readonly provider: BeliefGuardProvider;
     private readonly llmClient: LLMClient;
     private readonly beliefManager: BeliefStateManager;
+    private readonly sessionPersistence?: MementoSessionPersistence;
 
-    constructor(provider: BeliefGuardProvider) {
+    constructor(
+        provider: BeliefGuardProvider,
+        sessionPersistence?: MementoSessionPersistence
+    ) {
         this.provider = provider;
+        this.sessionPersistence = sessionPersistence;
         this.llmClient = new LLMClient();
         const workspaceName = vscode.workspace.workspaceFolders?.[0]?.name;
         this.beliefManager = new BeliefStateManager(workspaceName);
         this.beliefManager.setDiagnosticReporter((event) => {
             this.audit('thinkn', event.title, event.detail, event.level, event.data);
         });
+
+        if (this.sessionPersistence?.hydrate(SessionStore.getInstance())) {
+            this.audit(
+                'session',
+                'Restored persisted belief snapshot',
+                'Loaded the last saved local belief graph snapshot from VS Code memento.',
+                'info'
+            );
+            this.pushBeliefGraphSnapshot();
+        }
     }
 
     /**
@@ -1301,5 +1318,6 @@ export class MainOrchestrator {
 
     private pushBeliefGraphSnapshot(): void {
         this.provider.postBeliefGraph(this.beliefManager.getAllBeliefs());
+        void this.sessionPersistence?.save(SessionStore.getInstance());
     }
 }

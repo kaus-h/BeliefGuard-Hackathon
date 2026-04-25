@@ -1,0 +1,30 @@
+{
+  "name": "Validated local utility change proceeds",
+  "task": "Rename an internal helper variable in a local utility file.",
+  "expectedOutcome": "PROCEED",
+  "beliefs": [
+    {
+      "id": "repo-local-util",
+      "statement": "Target change is scoped to an internal utility file.",
+      "type": "REPO_FACT",
+      "confidenceScore": 0.94,
+      "riskLevel": "LOW",
+      "evidenceIds": ["evidence-utility-file"],
+      "isValidated": true,
+      "contradictions": []
+    }
+  ],
+  "validatedBeliefs": [
+    {
+      "id": "user-allow-local-util",
+      "statement": "Local utility refactors are allowed.",
+      "type": "USER_CONSTRAINT",
+      "confidenceScore": 1,
+      "riskLevel": "LOW",
+      "evidenceIds": ["evidence-user-prompt"],
+      "isValidated": true,
+      "contradictions": []
+    }
+  ],
+  "patch": "*** Begin Patch\n*** Update File: src/utils/names.ts\n@@\n-const x = value;\n+const normalizedName = value;\n*** End Patch"
+}

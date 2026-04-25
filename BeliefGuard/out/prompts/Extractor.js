@@ -31,6 +31,22 @@ User Task:
 ${userTask}
 ###
 
-Analyze the user task against the repository context and output a JSON array of extracted beliefs along with the target files and intent description.`;
+Analyze the user task against the repository context and output a single JSON object with this exact shape:
+{
+  "intentDescription": "brief description of the intended implementation path",
+  "targetFiles": ["workspace-relative/path.ts"],
+  "extractedBeliefs": [
+    {
+      "id": "optional UUID or empty string",
+      "statement": "one explicit belief or assumption",
+      "type": "REPO_FACT | TASK_BELIEF | AGENT_ASSUMPTION",
+      "confidenceScore": 0.0,
+      "riskLevel": "LOW | MEDIUM | HIGH",
+      "evidenceIds": [],
+      "isValidated": false,
+      "contradictions": []
+    }
+  ]
+}`;
 }
 //# sourceMappingURL=Extractor.js.map

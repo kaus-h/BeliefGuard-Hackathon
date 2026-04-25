@@ -1,4 +1,5 @@
 import { BeliefGuardProvider } from '../webview/BeliefGuardProvider';
+import { MementoSessionPersistence } from '../state/MementoSessionPersistence';
 /**
  * MainOrchestrator — End-to-End Pipeline Controller
  *
@@ -11,7 +12,8 @@ export declare class MainOrchestrator {
     private readonly provider;
     private readonly llmClient;
     private readonly beliefManager;
-    constructor(provider: BeliefGuardProvider);
+    private readonly sessionPersistence?;
+    constructor(provider: BeliefGuardProvider, sessionPersistence?: MementoSessionPersistence);
     /**
      * Executes the full 11-step guarded task pipeline.
      *
